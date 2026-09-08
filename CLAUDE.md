@@ -7,10 +7,10 @@ Guidance for Claude Code (claude.ai/code) working in this repository.
 Consort is a desktop Matrix chat client in Rust and Tauri, aimed at voice-first
 team chat. Today it does authentication, session verification (emoji and
 recovery key), room key backup, the room list, voice over MatrixRTC and
-LiveKit, reading and sending text in a room, attachments, threads, replies both
-sent and drawn, reactions, mentions, a typing indicator, and `matrix.to` links
-that go where they point. Sending an attachment and editing a message are not
-built.
+LiveKit, reading and sending text in a room, attachments both sent and drawn,
+threads, replies both sent and drawn, reactions, mentions, a typing indicator,
+and `matrix.to` links that go where they point. Editing a message is not built,
+and neither is upload progress or a thumbnail for a clip somebody sends.
 
 ## Layout
 
@@ -246,6 +246,12 @@ rediscovering:
   registers an account of its own: two logins to a reused account produce two
   devices where neither holds the cross-signing private keys, so nothing can
   sign anything and the test passes only the first time.
+- **An upload needs the media config endpoint mocked.** `Room::send_attachment`
+  asks the homeserver how large an upload it takes before it sends anything, so
+  a `MatrixMockServer` test of the send path that mounts only `mock_upload` and
+  `mock_room_send` fails on a 404 that names neither. Mount
+  `mock_authenticated_media_config` and `mock_media_config` both: which one the
+  SDK reaches for depends on the versions the server advertises.
 - **Tauri commands are one-line delegates.** `State<'_, AppState>` only exists
   inside a running app, so logic written directly in a `#[tauri::command]` is
   logic no test can reach. Every command calls a plain `*_for(&AppState, ..)`

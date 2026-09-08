@@ -17,6 +17,12 @@ const timelineLater = vi.hoisted(() => vi.fn());
 const timelineGoTo = vi.hoisted(() => vi.fn());
 const timelinePresent = vi.hoisted(() => vi.fn());
 const onTyping = vi.hoisted(() => vi.fn());
+// The three ways an attachment reaches the composer, and the two ways one
+// leaves it.
+const onDropped = vi.hoisted(() => vi.fn());
+const pickAttachment = vi.hoisted(() => vi.fn());
+const attachFile = vi.hoisted(() => vi.fn());
+const attachBytes = vi.hoisted(() => vi.fn());
 const timelineTyping = vi.hoisted(() => vi.fn());
 const timelineSend = vi.hoisted(() => vi.fn());
 const timelineReply = vi.hoisted(() => vi.fn());
@@ -46,6 +52,10 @@ vi.mock("../lib/api", async (importOriginal) => ({
   timelineGoTo,
   timelinePresent,
   onTyping,
+  onDropped,
+  pickAttachment,
+  attachFile,
+  attachBytes,
   timelineTyping,
   timelineSend,
   timelineReply,
@@ -133,6 +143,7 @@ let publish: (timeline: Timeline) => void;
 let publishThread: (thread: Thread | null) => void;
 /** And for the typing channel. */
 let publishTyping: (typing: Typing) => void;
+let publishDrop: (files: { path: string; name: string; size: number }[]) => void;
 
 beforeEach(() => {
   resetAvatarCache();
@@ -140,6 +151,18 @@ beforeEach(() => {
   publish = () => {};
   publishThread = () => {};
   publishTyping = () => {};
+  publishDrop = () => {};
+  onDropped
+    .mockReset()
+    .mockImplementation(
+      (handler: (files: { path: string; name: string; size: number }[]) => void) => {
+        publishDrop = handler;
+        return Promise.resolve(() => {});
+      },
+    );
+  pickAttachment.mockReset().mockResolvedValue(null);
+  attachFile.mockReset().mockResolvedValue(undefined);
+  attachBytes.mockReset().mockResolvedValue(undefined);
   timelineTyping.mockReset().mockResolvedValue(undefined);
   onTyping.mockReset().mockImplementation((handler: (t: Typing) => void) => {
     publishTyping = handler;
@@ -987,6 +1010,271 @@ describe("answering a message", () => {
 
     expect(
       screen.queryByRole("button", { name: "Stop replying" }),
+    ).not.toBeInTheDocument();
+  });
+});
+
+describe("sending an attachment", () => {
+  const CHOSEN = {
+    path: "/home/ada/holiday.png",
+    name: "holiday.png",
+    size: 2048,
+  };
+
+  /** The bytes of a file, as a paste event carries them. */
+  function pastedFile(name: string, contents = "png") {
+    return new File([contents], name, { type: "image/png" });
+  }
+
+  /** Paste `files` into the composer, as a screenshot arrives. */
+  async function paste(files: File[]) {
+    await act(async () => {
+      fireEvent.paste(screen.getByRole("textbox"), {
+        clipboardData: { files, getData: () => "" },
+      });
+    });
+  }
+
+  it("puts what the picker returned in the composer without sending it", async () => {
+    // Two moments on purpose: the box below is the caption, so a file that
+    // sent itself on sight would leave nowhere to say anything about it.
+    pickAttachment.mockResolvedValue(CHOSEN);
+    await pane();
+
+    await userEvent.click(screen.getByRole("button", { name: "Attach a file" }));
+
+    expect(await screen.findByText("holiday.png")).toBeVisible();
+    expect(attachFile).not.toHaveBeenCalled();
+  });
+
+  it("says how large the file is, in words", async () => {
+    pickAttachment.mockResolvedValue(CHOSEN);
+    await pane();
+
+    await userEvent.click(screen.getByRole("button", { name: "Attach a file" }));
+
+    expect(await screen.findByText("2.0 KB")).toBeVisible();
+  });
+
+  it("draws nothing when the picker was closed without choosing", async () => {
+    // Not a failure and must not be drawn as one.
+    pickAttachment.mockResolvedValue(null);
+    await pane();
+
+    await userEvent.click(screen.getByRole("button", { name: "Attach a file" }));
+
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Do not send/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("sends the file with the box as its caption", async () => {
+    pickAttachment.mockResolvedValue(CHOSEN);
+    await pane();
+    await userEvent.click(screen.getByRole("button", { name: "Attach a file" }));
+    await screen.findByText("holiday.png");
+
+    await userEvent.type(screen.getByRole("textbox"), "look at this");
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    expect(attachFile).toHaveBeenCalledWith(
+      GENERAL,
+      "/home/ada/holiday.png",
+      "look at this",
+      null,
+    );
+    expect(timelineSend).not.toHaveBeenCalled();
+  });
+
+  it("sends a file nobody captioned", async () => {
+    // The ordinary case. An empty box is not a caption of nothing, it is no
+    // caption at all, and sending one would put a blank line under the
+    // picture.
+    pickAttachment.mockResolvedValue(CHOSEN);
+    await pane();
+    await userEvent.click(screen.getByRole("button", { name: "Attach a file" }));
+    await screen.findByText("holiday.png");
+
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    expect(attachFile).toHaveBeenCalledWith(
+      GENERAL,
+      "/home/ada/holiday.png",
+      null,
+      null,
+    );
+  });
+
+  it("answers a message with a picture rather than sending two things", async () => {
+    pickAttachment.mockResolvedValue(CHOSEN);
+    await pane();
+    await arrive(timeline([said("$1", ADA, "what does it look like")]));
+    await userEvent.click(screen.getByRole("button", { name: "Reply" }));
+    await userEvent.click(screen.getByRole("button", { name: "Attach a file" }));
+    await screen.findByText("holiday.png");
+
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    expect(attachFile).toHaveBeenCalledWith(
+      GENERAL,
+      "/home/ada/holiday.png",
+      null,
+      "$1",
+    );
+    expect(timelineReply).not.toHaveBeenCalled();
+  });
+
+  it("clears the composer once the homeserver has it", async () => {
+    pickAttachment.mockResolvedValue(CHOSEN);
+    await pane();
+    await userEvent.click(screen.getByRole("button", { name: "Attach a file" }));
+    await screen.findByText("holiday.png");
+    await userEvent.type(screen.getByRole("textbox"), "look");
+
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    await waitFor(() => expect(screen.getByRole("textbox")).toHaveValue(""));
+    expect(screen.queryByText("holiday.png")).not.toBeInTheDocument();
+  });
+
+  it("keeps the file and the caption when the send fails", async () => {
+    // Opening the picker again is the same loss as retyping a message, and
+    // for a screenshot that has since been deleted it is worse than that.
+    attachFile.mockRejectedValue({ message: "too large", detail: "413" });
+    pickAttachment.mockResolvedValue(CHOSEN);
+    await pane();
+    await userEvent.click(screen.getByRole("button", { name: "Attach a file" }));
+    await screen.findByText("holiday.png");
+    await userEvent.type(screen.getByRole("textbox"), "look");
+
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("too large");
+    expect(screen.getByRole("textbox")).toHaveValue("look");
+    expect(screen.getByText("holiday.png")).toBeVisible();
+  });
+
+  it("takes the file back out when the control is pressed", async () => {
+    pickAttachment.mockResolvedValue(CHOSEN);
+    await pane();
+    await userEvent.click(screen.getByRole("button", { name: "Attach a file" }));
+    await screen.findByText("holiday.png");
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Do not send holiday.png" }),
+    );
+
+    expect(screen.queryByText("holiday.png")).not.toBeInTheDocument();
+  });
+
+  it("takes the file back out on Escape in the box", async () => {
+    pickAttachment.mockResolvedValue(CHOSEN);
+    await pane();
+    await userEvent.click(screen.getByRole("button", { name: "Attach a file" }));
+    await screen.findByText("holiday.png");
+
+    await userEvent.type(screen.getByRole("textbox"), "{Escape}");
+
+    expect(screen.queryByText("holiday.png")).not.toBeInTheDocument();
+  });
+
+  it("does not carry a staged file into another channel", async () => {
+    // A picture left in the composer and carried into another channel is a
+    // picture that goes to the wrong people.
+    pickAttachment.mockResolvedValue(CHOSEN);
+    const { rerender } = render(
+      <RoomTimeline selfId={BOB} onOpenRoom={vi.fn()} channel={general} />,
+    );
+    await waitFor(() => expect(timelineOpen).toHaveBeenCalled());
+    await userEvent.click(screen.getByRole("button", { name: "Attach a file" }));
+    await screen.findByText("holiday.png");
+
+    rerender(<RoomTimeline selfId={BOB} onOpenRoom={vi.fn()} channel={lounge} />);
+
+    await waitFor(() =>
+      expect(screen.queryByText("holiday.png")).not.toBeInTheDocument(),
+    );
+  });
+
+  it("stages a file dropped onto the window", async () => {
+    // The drop arrives from Rust rather than from a drop event here: Tauri
+    // handles it, which is what stops a dropped file navigating the window.
+    await pane();
+
+    await act(async () => {
+      publishDrop([CHOSEN]);
+    });
+
+    expect(screen.getByText("holiday.png")).toBeVisible();
+  });
+
+  it("says so when more than one file is dropped", async () => {
+    // Two would change the picker, this line and what a failure halfway
+    // through means, all at once. Sending the first silently is the version
+    // of that which loses the other.
+    await pane();
+
+    await act(async () => {
+      publishDrop([CHOSEN, { ...CHOSEN, name: "other.png" }]);
+    });
+
+    expect(screen.getByRole("alert")).toHaveTextContent("one attachment");
+    expect(screen.getByText("holiday.png")).toBeVisible();
+  });
+
+  it("says so when what was dropped was not a file at all", async () => {
+    // A folder. Rust has already dropped it from the list, so the composer
+    // gets an empty one, and a drop that appears to have done nothing is
+    // worse than being told.
+    await pane();
+
+    await act(async () => {
+      publishDrop([]);
+    });
+
+    expect(screen.getByRole("alert")).toHaveTextContent("was not one");
+  });
+
+  it("sends a pasted screenshot as bytes rather than as a path", async () => {
+    // The one path whose bytes start in the page, because a paste carries a
+    // `File` this side may read with no capability at all.
+    await pane();
+    await paste([pastedFile("screenshot.png")]);
+
+    expect(screen.getByText("screenshot.png")).toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    await waitFor(() => expect(attachBytes).toHaveBeenCalled());
+    const [roomId, filename, data, caption, replyTo] = attachBytes.mock
+      .calls[0] as [string, string, string, string | null, string | null];
+    expect(roomId).toBe(GENERAL);
+    expect(filename).toBe("screenshot.png");
+    expect(atob(data)).toBe("png");
+    expect(caption).toBeNull();
+    expect(replyTo).toBeNull();
+    expect(attachFile).not.toHaveBeenCalled();
+  });
+
+  it("names a pasted screenshot that arrived without a name", async () => {
+    // Some desktops hand over a nameless blob, and an attachment with no name
+    // is a card labelled with nothing.
+    await pane();
+
+    await paste([pastedFile("")]);
+
+    expect(screen.getByText("pasted-image.png")).toBeVisible();
+  });
+
+  it("leaves a paste with no file in it alone", async () => {
+    // Text copied out of a spreadsheet arrives as both, and swallowing the
+    // event would lose the words somebody meant to paste.
+    await pane();
+
+    await paste([]);
+
+    expect(
+      screen.queryByRole("button", { name: /Do not send/ }),
     ).not.toBeInTheDocument();
   });
 });

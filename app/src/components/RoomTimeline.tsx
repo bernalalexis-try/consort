@@ -12,10 +12,15 @@ import { channelLabel, typingLabel } from "../lib/labels";
 import { useRoomLinks } from "../lib/roomLinks";
 import {
   asCommandError,
+  attachBytes,
+  attachFile,
+  encodeAttachment,
   memberNames,
+  onDropped,
   onThread,
   onTimeline,
   onTyping,
+  pickAttachment,
   resendState,
   timelineClose,
   timelineCopyLink,
@@ -89,6 +94,61 @@ const TYPING_EVERY = 3_000;
 export const COPIED_FOR = 1_800;
 
 /**
+ * The control that opens the picker, and the mark on the line above the box.
+ *
+ * Here rather than beside the reply arrow in `MessageGroups`, which is about
+ * one message: this one is about the composer, and the two files have no other
+ * reason to know about each other.
+ */
+function PaperclipIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M21 12.5 12.9 20.6a5 5 0 0 1-7.1-7.1l8.5-8.5a3.3 3.3 0 0 1 4.7 4.7l-8.5 8.5a1.7 1.7 0 0 1-2.4-2.4l7.8-7.8" />
+    </svg>
+  );
+}
+
+/**
+ * The one attachment waiting in the composer, and where its bytes are.
+ *
+ * Two shapes because there are two answers to that. A file somebody picked or
+ * dropped is a path Rust will read at the moment they press send, so nothing
+ * is held on either side in the meantime. A paste is a `File` the page already
+ * has, because a `paste` event carries one and reading it needs no capability
+ * at all; that one is held here, which is what a screenshot costs.
+ *
+ * One at a time. More would change the picker, this line, and what a failure
+ * halfway through a send means, all at once.
+ */
+type Staged =
+  | { kind: "file"; name: string; size: number; path: string }
+  | { kind: "pasted"; name: string; size: number; bytes: File };
+
+/** What a staged attachment weighs, in words rather than in bytes. */
+function weigh(bytes: number): string {
+  const units = ["bytes", "KB", "MB", "GB"];
+  let at = 0;
+  let size = bytes;
+  while (size >= 1024 && at < units.length - 1) {
+    size /= 1024;
+    at += 1;
+  }
+  // Whole numbers for bytes, because "1.0 bytes" is nonsense, and one decimal
+  // for everything else, because a 4 MB screenshot and a 4.7 MB one are worth
+  // telling apart.
+  return at === 0 ? `${size} ${units[at]}` : `${size.toFixed(1)} ${units[at]}`;
+}
+
+/**
  * A room's messages, and somewhere to add to them.
  *
  * The list is not held here. `timelineOpen` starts a watcher in Rust that
@@ -151,6 +211,12 @@ export function RoomTimeline({
   const [answering, setAnswering] = useState<Message | null>(null);
   /* The message whose address has just gone to the clipboard, or none. */
   const [copied, setCopied] = useState<string | null>(null);
+  /*
+    The attachment waiting to be sent, or none. Staged rather than sent on
+    sight, so that the box below it is the caption and the picture and the
+    words go out as one message rather than as two.
+  */
+  const [staged, setStaged] = useState<Staged | null>(null);
   /*
     Whose card is open, and where it was asked for. One at a time, for the
     reason the sidebar has the same rule: two cards about two people are two
@@ -271,6 +337,55 @@ export function RoomTimeline({
       });
     };
   }, []);
+
+  /*
+    Files dragged onto the window. They arrive from Rust rather than from a
+    drop event on this element: Tauri handles the drop itself, which is what
+    stops a dropped file navigating the window away from Consort, and the
+    webview's own drop events never fire.
+  */
+  useEffect(() => {
+    let cancelled = false;
+    const unlisten = onDropped((files) => {
+      if (cancelled) return;
+      const [first] = files;
+      if (first === undefined) {
+        // A folder, or a piece of text landing on the window. Saying so beats
+        // a drop that appears to have done nothing.
+        setProblem("Consort sends files, and that was not one.");
+        return;
+      }
+      setProblem(
+        files.length > 1 ? "Consort sends one attachment at a time." : null,
+      );
+      setStaged({
+        kind: "file",
+        name: first.name,
+        size: first.size,
+        path: first.path,
+      });
+      draftBox.current?.focus();
+    });
+
+    return () => {
+      cancelled = true;
+      void unlisten.then((stop) => {
+        stop();
+      });
+    };
+  }, []);
+
+  /*
+    Whatever was waiting to be sent belongs to the room it was staged in. A
+    picture left in the composer and carried into another channel is a picture
+    that goes to the wrong people.
+  */
+  useEffect(
+    () => () => {
+      setStaged(null);
+    },
+    [channel.id],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -581,21 +696,97 @@ export function RoomTimeline({
       });
   }
 
+  /** Open the desktop's picker, and put whatever comes back in the composer. */
+  function attach() {
+    void pickAttachment()
+      .then((chosen) => {
+        // Null is the window closed without choosing, which is not a failure.
+        if (chosen === null) return;
+        setProblem(null);
+        setStaged({
+          kind: "file",
+          name: chosen.name,
+          size: chosen.size,
+          path: chosen.path,
+        });
+        draftBox.current?.focus();
+      })
+      .catch((raw: unknown) => {
+        setProblem(asCommandError(raw).message);
+      });
+  }
+
+  /**
+   * Put a pasted file in the composer, and say whether there was one.
+   *
+   * The answer is what decides whether the paste still reaches the box. A
+   * screenshot has no text in it and swallowing the event costs nothing; text
+   * copied out of a spreadsheet arrives as both, and stopping it there would
+   * lose the words somebody meant to paste.
+   */
+  function pasted(files: FileList): boolean {
+    const file: File | undefined = files[0];
+    if (file === undefined) return false;
+
+    setProblem(
+      files.length > 1 ? "Consort sends one attachment at a time." : null,
+    );
+    setStaged({
+      kind: "pasted",
+      // A screenshot off the clipboard has no name of its own on some
+      // desktops, and an attachment with no name is a card labelled with
+      // nothing.
+      name: file.name === "" ? "pasted-image.png" : file.name,
+      size: file.size,
+      bytes: file,
+    });
+    return true;
+  }
+
+  /** Send whatever is staged, with the box as its caption. */
+  async function sendStaged(attachment: Staged) {
+    // Empty rather than a blank line under the picture, which is what a
+    // caption of whitespace would draw.
+    const caption = draft.trim() === "" ? null : draft;
+    const replyTo = answering === null ? null : answering.id;
+
+    if (attachment.kind === "file") {
+      await attachFile(channel.id, attachment.path, caption, replyTo);
+      return;
+    }
+
+    const bytes = new Uint8Array(await attachment.bytes.arrayBuffer());
+    await attachBytes(
+      channel.id,
+      attachment.name,
+      encodeAttachment(bytes),
+      caption,
+      replyTo,
+    );
+  }
+
   async function send() {
-    if (draft.trim() === "" || sending) return;
+    if ((draft.trim() === "" && staged === null) || sending) return;
 
     setSending(true);
     setProblem(null);
     try {
-      // A reply and a message differ only in what they name. Both land in the
-      // room, and both appear when the sync brings them back.
-      await (answering === null
-        ? timelineSend(channel.id, draft)
-        : timelineReply(channel.id, answering.id, answering.sender, draft));
+      // A reply, a message and an attachment differ only in what they name.
+      // All three land in the room, and all three appear when the sync brings
+      // them back.
+      if (staged !== null) {
+        await sendStaged(staged);
+      } else {
+        await (answering === null
+          ? timelineSend(channel.id, draft)
+          : timelineReply(channel.id, answering.id, answering.sender, draft));
+      }
       // Cleared only once the homeserver has it. A box that empties on a send
       // that failed loses what somebody wrote, and retyping it is the one
-      // thing an interface must never ask for.
+      // thing an interface must never ask for. The same goes for the file: a
+      // picker somebody has to open twice is the same loss.
       setDraft("");
+      setStaged(null);
       setAnswering(null);
       // Said, so no longer typing. Before the scroll rather than after it,
       // because the room should stop showing this name the moment the message
@@ -802,6 +993,28 @@ export function RoomTimeline({
         </div>
       )}
 
+      {/*
+        What is about to be sent, above the box that captions it. Drawn on the
+        same terms as the reply line: a staged attachment is a thing somebody
+        can forget they did, and a composer that says nothing about it sends a
+        photo with the next sentence typed into it.
+      */}
+      {staged !== null && (
+        <div className="timeline__staged">
+          <PaperclipIcon className="timeline__staged-glyph" />
+          <span className="timeline__staged-name">{staged.name}</span>
+          <span className="timeline__staged-size">{weigh(staged.size)}</span>
+          <button
+            type="button"
+            className="timeline__staged-stop"
+            aria-label={`Do not send ${staged.name}`}
+            onClick={() => setStaged(null)}
+          >
+            &times;
+          </button>
+        </div>
+      )}
+
       <form
         className="timeline__composer"
         onSubmit={(event) => {
@@ -812,27 +1025,49 @@ export function RoomTimeline({
         <label className="timeline__label" htmlFor="timeline-draft">
           Message {channel.kind === "voice" ? name : `#${name}`}
         </label>
+        <button
+          type="button"
+          className="timeline__attach"
+          aria-label="Attach a file"
+          disabled={sending}
+          onClick={attach}
+        >
+          <PaperclipIcon />
+        </button>
         <textarea
           id="timeline-draft"
           className="timeline__draft"
           ref={draftBox}
           rows={1}
           value={draft}
-          placeholder={`Message ${channel.kind === "voice" ? name : `#${name}`}`}
+          placeholder={
+            staged === null
+              ? `Message ${channel.kind === "voice" ? name : `#${name}`}`
+              : `Say something about ${staged.name}`
+          }
           onChange={(event) => {
             setDraft(event.target.value);
             report(event.target.value);
           }}
+          onPaste={(event) => {
+            // The path people use most, and the only one whose bytes start in
+            // the page: a `paste` carries a `File` this side may read with no
+            // capability at all.
+            if (pasted(event.clipboardData.files)) event.preventDefault();
+          }}
           onKeyDown={(event) => {
             /*
-              Escape stops answering, which is what it does to everything else
-              here that can be dismissed. Stopped where it is caught, so that
-              one press cancels the reply rather than also shutting the thread
-              panel listening on the window behind it.
+              Escape puts the composer back to an ordinary message: no reply,
+              no attachment. That is what it does to everything else here that
+              can be dismissed. Stopped where it is caught, so that one press
+              clears the box rather than also shutting the thread panel
+              listening on the window behind it.
             */
-            if (event.key === "Escape" && answering !== null) {
+            const composing = answering !== null || staged !== null;
+            if (event.key === "Escape" && composing) {
               event.stopPropagation();
               setAnswering(null);
+              setStaged(null);
               return;
             }
             // Enter sends and Shift+Enter breaks the line, which is what every
@@ -846,7 +1081,7 @@ export function RoomTimeline({
         <button
           type="submit"
           className="timeline__send"
-          disabled={draft.trim() === "" || sending}
+          disabled={(draft.trim() === "" && staged === null) || sending}
         >
           Send
         </button>

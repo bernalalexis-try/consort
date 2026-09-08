@@ -12,8 +12,8 @@ at whatever homeserver you already run.
 
 > **Status: early.** It signs you in and keeps you signed in, verifies itself,
 > draws your rooms, joins voice channels, and reads and writes text, threads,
-> replies, reactions and attachments. Sending an attachment and editing a
-> message are not built.
+> replies, reactions and attachments, sending included. Editing a message is
+> not built.
 
 ---
 
@@ -38,6 +38,11 @@ at whatever homeserver you already run.
 - **Text.** Reading and sending messages, with names and avatars. Older
   messages load as you scroll to them. Attachments are drawn and can be saved
   anywhere. Mentions of you are marked.
+- **Sending attachments.** Pick a file, drag one onto the window, or paste a
+  screenshot. Whatever it is is decided by the bytes rather than by the name,
+  so a picture arrives as a picture however it was last renamed, and pictures
+  are measured before they go so nobody's room jumps as they load. Whatever is
+  in the box goes with it as a caption, and a picture can answer a message.
 - **Threads and replies.** Threads open beside the room and can be started from
   any message. Any message can also be answered in the room itself: the box
   above the composer says what is being answered, the reply is drawn as a
@@ -171,7 +176,8 @@ resource here. The full standard, and what gets a change sent back, is in
 | Room list and voice channel discovery | working |
 | Voice over MatrixRTC and LiveKit, with device settings | working |
 | Text, attachments, threads, replies, reactions, mentions | working |
-| Sending attachments, editing, read receipts | planned |
+| Sending attachments, by picker, drag or paste | working |
+| Editing, read receipts, upload progress, video thumbnails | planned |
 | Signed and notarised builds for Windows and macOS | someday |
 
 "Working" means doing real work in that row, not that the row is finished.

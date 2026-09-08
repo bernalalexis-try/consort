@@ -113,6 +113,17 @@ pub enum Error {
     #[error("attachment is {bytes} bytes, past the {limit} this build will carry")]
     MediaTooLarge { bytes: usize, limit: usize },
 
+    /// An attachment the homeserver would not have taken.
+    ///
+    /// Its own variant rather than a reading of [`Self::MediaTooLarge`],
+    /// because the two are different ceilings with different answers. That one
+    /// is about this machine's memory and is the same everywhere; this one is
+    /// whatever the homeserver was configured with, which on plenty of them is
+    /// tens of megabytes, and the only thing to do about it is send something
+    /// smaller or ask whoever runs the server.
+    #[error("attachment is {bytes} bytes, past the {limit} this homeserver accepts")]
+    UploadTooLarge { bytes: usize, limit: usize },
+
     /// An attachment whose bytes are neither a picture nor a clip.
     ///
     /// The type an event claims is written by whoever sent it, so what
@@ -241,6 +252,9 @@ impl Error {
             Self::EmptyMessage => "There is nothing to send.".to_owned(),
             Self::MediaTooLarge { .. } => {
                 "That attachment is too large for Consort to show.".to_owned()
+            }
+            Self::UploadTooLarge { .. } => {
+                "That file is larger than this homeserver accepts.".to_owned()
             }
             Self::UndrawableMedia => {
                 "Consort cannot show that attachment.".to_owned()
@@ -402,6 +416,10 @@ mod tests {
             Error::MediaTooLarge {
                 bytes: 40_000_000,
                 limit: 33_554_432,
+            },
+            Error::UploadTooLarge {
+                bytes: 40_000_000,
+                limit: 50_000_000,
             },
             Error::UndrawableMedia,
             Error::NoSuchFlow {

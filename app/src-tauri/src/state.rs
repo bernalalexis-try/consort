@@ -461,6 +461,18 @@ impl AppState {
             .emit(AppEvent::CallRefused(CallRefused { room_id, readiness }));
     }
 
+    /// Say that files were dragged onto the window.
+    ///
+    /// Whatever was dropped that is not a file has already been dropped from
+    /// the list, so an empty one is a folder or a piece of text landing on the
+    /// window. Reported anyway rather than swallowed: the composer says one
+    /// sentence about what it will not send, and a drop that produced nothing
+    /// at all needs that sentence most.
+    pub fn files_dropped(&self, files: Vec<crate::attaching::Chosen>) {
+        tracing::debug!(count = files.len(), "files were dropped onto the window");
+        self.events.emit(AppEvent::Dropped(files));
+    }
+
     /// Leave the voice channel, if this session is in one.
     ///
     /// A no-op when no call was ever started, which is what a stray click on a
@@ -1096,6 +1108,44 @@ mod tests {
         let sink = Arc::new(RecordingSink::new());
         let settings = SettingsStore::at(dir.path());
         (dir, AppState::new(store, settings, sink.clone()), sink)
+    }
+
+    #[test]
+    fn a_drop_reaches_the_webview_with_the_files_in_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cat.png");
+        std::fs::write(&path, b"0123456789").unwrap();
+        let (_dir, state, sink) = state();
+
+        state.files_dropped(vec![crate::attaching::chosen(&path).unwrap()]);
+
+        let dropped = sink
+            .events()
+            .into_iter()
+            .find_map(|event| match event {
+                AppEvent::Dropped(files) => Some(files),
+                _ => None,
+            })
+            .expect("a drop is reported");
+        assert_eq!(dropped.len(), 1);
+        assert_eq!(dropped[0].name, "cat.png");
+        assert_eq!(dropped[0].size, 10);
+    }
+
+    #[test]
+    fn a_drop_of_nothing_sendable_is_still_reported() {
+        // A folder, or a piece of text landing on the window. The composer
+        // says one sentence about what it will not send, and a drop that
+        // produced nothing at all is the case that needs it most.
+        let (_dir, state, sink) = state();
+
+        state.files_dropped(Vec::new());
+
+        assert!(
+            sink.events()
+                .iter()
+                .any(|event| matches!(event, AppEvent::Dropped(files) if files.is_empty()))
+        );
     }
 
     #[tokio::test]

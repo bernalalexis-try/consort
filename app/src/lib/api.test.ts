@@ -8,7 +8,12 @@ vi.mock("@tauri-apps/api/event", () => ({ listen }));
 
 import {
   asCommandError,
+  attachBytes,
+  attachFile,
   audioDevices,
+  encodeAttachment,
+  onDropped,
+  pickAttachment,
   mediaUrl,
   mxcUrl,
   callConnect,
@@ -346,6 +351,82 @@ describe("replies and links", () => {
     expect(invoke).toHaveBeenCalledWith("room_at", {
       address: "#general:example.org",
     });
+  });
+});
+
+describe("attachments", () => {
+  beforeEach(() => {
+    invoke.mockReset().mockResolvedValue(undefined);
+    listen.mockReset().mockResolvedValue(() => {});
+  });
+
+  it("asks Rust to open the picker, because this page cannot", async () => {
+    invoke.mockResolvedValue({
+      path: "/home/ada/cat.png",
+      name: "cat.png",
+      size: 10,
+    });
+
+    await expect(pickAttachment()).resolves.toEqual({
+      path: "/home/ada/cat.png",
+      name: "cat.png",
+      size: 10,
+    });
+    expect(invoke).toHaveBeenCalledWith("attachment_pick");
+  });
+
+  it("subscribes to the channel a drop arrives on", async () => {
+    // The name is a contract with `AppEvent::DROPPED`, and Tauri does not
+    // complain about a listener for a channel nothing sends on.
+    await onDropped(vi.fn());
+
+    expect(listen).toHaveBeenCalledWith("dropped", expect.any(Function));
+  });
+
+  it("sends a picked file by its path, with the caption beside it", async () => {
+    await attachFile(
+      "!general:example.org",
+      "/home/ada/cat.png",
+      "look",
+      "$said:example.org",
+    );
+
+    expect(invoke).toHaveBeenCalledWith("timeline_attach_file", {
+      roomId: "!general:example.org",
+      path: "/home/ada/cat.png",
+      caption: "look",
+      replyTo: "$said:example.org",
+    });
+  });
+
+  it("sends a pasted attachment as bytes rather than as a path", async () => {
+    await attachBytes("!general:example.org", "pasted.png", "cG5n", null, null);
+
+    expect(invoke).toHaveBeenCalledWith("timeline_attach_bytes", {
+      roomId: "!general:example.org",
+      filename: "pasted.png",
+      data: "cG5n",
+      caption: null,
+      replyTo: null,
+    });
+  });
+
+  it("encodes what a paste carried so it survives the boundary", () => {
+    // The other half of `crate::attaching::decode`. Bytes above 127 are the
+    // point: every real picture has them, and an encoding that mangled them
+    // would produce a file nobody can open.
+    const bytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+    expect(encodeAttachment(bytes)).toBe("iVBORw0KGgo=");
+  });
+
+  it("encodes a screenshot-sized paste without overflowing the stack", () => {
+    // Spreading a few hundred thousand arguments into `fromCharCode` throws,
+    // and the size at which it starts to is a browser's business rather than
+    // something to find out in front of a user.
+    const bytes = new Uint8Array(400_000).fill(0xff);
+
+    expect(atob(encodeAttachment(bytes))).toHaveLength(400_000);
   });
 });
 

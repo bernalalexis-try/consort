@@ -1680,6 +1680,123 @@ export function timelineReply(
 }
 
 /**
+ * A file somebody chose, before anything has been read of it.
+ *
+ * Mirrors `crate::attaching::Chosen`. There are no bytes here on purpose:
+ * the picker and a drop both end in a path, the webview has no filesystem
+ * capability, and the read waits until send. `path` is Rust's own string and
+ * goes back unread, on the same terms as an attachment handle.
+ */
+export interface Chosen {
+  path: string;
+  /** The file's own name, which is what the room will call it. */
+  name: string;
+  /** How many bytes it is, for saying what is about to be sent. */
+  size: number;
+}
+
+/**
+ * Open the desktop's file picker, and say what was chosen.
+ *
+ * Resolves to `null` when the window was closed without choosing, which is not
+ * a failure and must not be drawn as one.
+ *
+ * A command rather than an `input type="file"`, for the reason Save As is one:
+ * the page has `core:default` and could not read what came back. Nothing is
+ * read yet either way. What arrives is a name and a length.
+ */
+export function pickAttachment(): Promise<Chosen | null> {
+  return invoke<Chosen | null>("attachment_pick");
+}
+
+/**
+ * Listen for files dragged onto the window.
+ *
+ * An event rather than something the page can watch for itself: Tauri handles
+ * the drop and the webview's own drop events are off, which is what stops a
+ * dropped file navigating the window away from Consort.
+ *
+ * Never replayed to a webview that reloaded. A drop is something somebody did
+ * once, and replaying it would put a file back in the composer after they had
+ * taken it out.
+ */
+export function onDropped(
+  handler: (files: Chosen[]) => void,
+): Promise<UnlistenFn> {
+  return listen<Chosen[]>("dropped", (event) => handler(event.payload));
+}
+
+/**
+ * Send a file the picker or a drop named, by its path.
+ *
+ * `caption` is whatever was in the message box, and it rides on the same event
+ * as the picture rather than following it as a second message. `replyTo` is
+ * the message being answered, when one is.
+ *
+ * The attachment appears when the sync brings it round, on the same terms as a
+ * message: there is no local echo.
+ */
+export function attachFile(
+  roomId: string,
+  path: string,
+  caption: string | null,
+  replyTo: string | null,
+): Promise<void> {
+  return invoke<void>("timeline_attach_file", {
+    roomId,
+    path,
+    caption,
+    replyTo,
+  });
+}
+
+/**
+ * Send an attachment this page read off a paste.
+ *
+ * The one path whose bytes start in the webview, because a `paste` event
+ * carries a `File` a page may read with no capability at all, and it is the
+ * one people use most: it is how a screenshot is sent.
+ *
+ * The bytes go as base64. It is a third larger than what it holds, and it is
+ * what carries them beside the room and the caption: Tauri sends a buffer
+ * raw only when the whole argument payload is one, which leaves nowhere to
+ * put the other three, and a `Uint8Array` inside an object is serialised as
+ * an object with one key per byte.
+ */
+export function attachBytes(
+  roomId: string,
+  filename: string,
+  data: string,
+  caption: string | null,
+  replyTo: string | null,
+): Promise<void> {
+  return invoke<void>("timeline_attach_bytes", {
+    roomId,
+    filename,
+    data,
+    caption,
+    replyTo,
+  });
+}
+
+/**
+ * What a page read off a paste, as something to hand to `attachBytes`.
+ *
+ * Chunked rather than one `String.fromCharCode(...bytes)`, which throws on a
+ * screenshot: spreading a few hundred thousand arguments overflows the call
+ * stack, and the size at which it starts to is a browser's business rather
+ * than something to find out in front of a user.
+ */
+export function encodeAttachment(bytes: Uint8Array): string {
+  const CHUNK = 0x8000;
+  let binary = "";
+  for (let at = 0; at < bytes.length; at += CHUNK) {
+    binary += String.fromCharCode(...bytes.subarray(at, at + CHUNK));
+  }
+  return btoa(binary);
+}
+
+/**
  * Put one message's `matrix.to` address on the clipboard.
  *
  * A command rather than a clipboard call from here, because the webview has
