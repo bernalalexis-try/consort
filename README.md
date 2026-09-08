@@ -12,8 +12,9 @@ at whatever homeserver you already run.
 
 > **Status: early.** It signs you in and keeps you signed in, verifies itself,
 > draws your rooms, joins voice channels, and reads and writes text, threads,
-> replies, reactions and attachments. Sending an attachment and editing a
-> message are not built.
+> replies, reactions and attachments. It marks what you have not read and
+> remembers where you stopped. Sending an attachment and editing a message are
+> not built.
 
 ---
 
@@ -50,6 +51,11 @@ at whatever homeserver you already run.
   own address on the clipboard.
 - **Reactions.** Twelve keys to pick from, and any key anybody else sends draws
   correctly. Custom emoji from other clients are shown.
+- **What you have not read.** A channel with something waiting in it is drawn
+  in white, a channel where somebody said your name carries a count, and a room
+  you come back to opens where you left off with a line across it. Read
+  receipts go out publicly by default, the way every other Matrix client sends
+  them; Settings has a switch that keeps them to your own account instead.
 
 ---
 
@@ -171,7 +177,8 @@ resource here. The full standard, and what gets a change sent back, is in
 | Room list and voice channel discovery | working |
 | Voice over MatrixRTC and LiveKit, with device settings | working |
 | Text, attachments, threads, replies, reactions, mentions | working |
-| Sending attachments, editing, read receipts | planned |
+| Read receipts, unread channels, where reading stopped | working |
+| Sending attachments, editing | planned |
 | Signed and notarised builds for Windows and macOS | someday |
 
 "Working" means doing real work in that row, not that the row is finished.

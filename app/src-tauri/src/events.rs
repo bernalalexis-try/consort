@@ -657,6 +657,8 @@ mod tests {
                         avatar: None,
                         joined: true,
                         participants: vec![Participant::named("@ada:example.org", "Ada")],
+                        unread: 0,
+                        mentions: 0,
                     }],
                 },
             ],

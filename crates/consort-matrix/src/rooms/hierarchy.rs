@@ -221,6 +221,8 @@ mod tests {
             avatar: None,
             joined,
             participants: Vec::new(),
+            unread: 0,
+            mentions: 0,
         }
     }
 

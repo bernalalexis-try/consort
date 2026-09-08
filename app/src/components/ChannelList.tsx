@@ -363,6 +363,42 @@ function peopleIn(
   return { people: channel.participants, live: false };
 }
 
+/**
+ * How many mentions a badge will draw before it stops counting.
+ *
+ * Past this the number stops being information and starts being width. What
+ * somebody does about nine mentions and about ninety is the same thing, and a
+ * badge that grows to four digits pushes the channel name it belongs to off
+ * the row.
+ */
+const MOST_MENTIONS_SHOWN = 99;
+
+/**
+ * How many messages are waiting, drawn as a number.
+ *
+ * Only ever mentions. An unread count is drawn as the channel's name in white
+ * instead, because the number is not the useful part: what somebody does about
+ * forty unread messages and about four is open the channel. A mention is a
+ * different claim, it is about them, and the count is worth the space.
+ */
+function MentionBadge({ count, channel }: { count: number; channel: Channel }) {
+  if (count === 0) return null;
+
+  return (
+    <span
+      className="channels__mentions"
+      /*
+        The label carries the channel, because the badge is read out on its
+        own: a screen reader landing on "3" beside a name it has already
+        passed has been told a number and not what it counts.
+      */
+      aria-label={`${count} ${count === 1 ? "mention" : "mentions"} in ${channelLabel(channel)}`}
+    >
+      {count > MOST_MENTIONS_SHOWN ? `${MOST_MENTIONS_SHOWN}+` : count}
+    </span>
+  );
+}
+
 function ChannelRow({
   channel,
   selected,
@@ -398,7 +434,15 @@ function ChannelRow({
         any other, and every other client lets somebody open one without
         joining the call in it.
       */}
-      <div className="channels__row">
+      <div
+        className="channels__row"
+        /*
+          Whether the control that reads a voice channel is on this row. It is
+          drawn over the row rather than in it, so the mention badge beside it
+          has to leave its slot alone; see the stylesheet.
+        */
+        data-chat={voice && channel.joined}
+      >
         <button
           type="button"
           className="channels__entry"
@@ -411,6 +455,14 @@ function ChannelRow({
             looked like leaving it.
           */
           data-call={callState ?? undefined}
+          /*
+            Something has been said here since this account last looked. A
+            boolean rather than the count, because what is drawn is emphasis:
+            the number of unread messages is not the useful part, and a channel
+            list of numbers is a channel list somebody has to read rather than
+            scan.
+          */
+          data-unread={channel.unread > 0}
           /*
             A room this account is not in cannot be opened, so the control that
             would open it is disabled rather than absent. Hiding it would make
@@ -447,6 +499,18 @@ function ChannelRow({
             <ChatIcon />
           </button>
         )}
+        {/*
+          Outside the button, beside the chat control rather than inside the
+          thing that opens the channel. A count is a fact about the row and not
+          a second target on it, and nesting it would make the number a
+          separate place to click that did the same thing.
+
+          Drawn whether or not the channel is selected. The selected channel is
+          the one being read, so its count is on its way to zero anyway, and
+          taking the badge away early would make a mention arriving in the room
+          somebody is looking at the one mention they are never told about.
+        */}
+        <MentionBadge count={channel.mentions} channel={channel} />
       </div>
       {/*
         Beside the channel that was clicked rather than in the connection

@@ -121,6 +121,14 @@ enum Ask {
     Present,
     /// Open the thread hanging from this message, or close whatever is open.
     Thread(Option<String>),
+    /// Say that everything up to this message has been read.
+    ///
+    /// The boolean is whether the receipt that rides along with the marker is
+    /// the public one. Carried per ask rather than held by the watcher because
+    /// it is a setting somebody can change with a room already open, and a
+    /// watcher holding the answer from when the room was opened would keep
+    /// publishing receipts under the choice that has just been revoked.
+    Read(String, bool),
 }
 
 /// A room being watched, and a way to ask it for more.
@@ -190,6 +198,21 @@ impl Watch {
     /// the same moment as a room change is.
     pub fn open_thread(&self, root_id: Option<String>) {
         let _ = self.asking.send(Ask::Thread(root_id));
+    }
+
+    /// Say that everything up to and including `event_id` has been read.
+    ///
+    /// Safe to call as often as a scroll does. The watcher drops an ask naming
+    /// the message it last sent, so a reader sitting still at the bottom of a
+    /// quiet room sends one receipt and then nothing, however many times this
+    /// is called.
+    ///
+    /// This is also where leaving a room cancels the receipt. The ask travels
+    /// on the channel a room change drops, so one that arrives just after
+    /// somebody clicked away is answered by nobody rather than by the new
+    /// room's watcher, and no receipt is sent for a room nobody is reading.
+    pub fn mark_read(&self, event_id: String, public: bool) {
+        let _ = self.asking.send(Ask::Read(event_id, public));
     }
 }
 
@@ -267,6 +290,10 @@ where
         };
 
         let mut loaded = Loaded::new(watching.clone(), client.user_id().map(ToString::to_string));
+        // Before the first page, and before anything this watcher does can
+        // move it. Reading the room is what moves the marker, so a value read
+        // any later would already be the answer to "what have you just read".
+        loaded.read_up_to = room.fully_read_event_id().map(|id| id.to_string());
         loaded.publish(&on_change);
         loaded.publish_thread(&on_thread);
         // Said once at the start, so a reader that has just changed room is
@@ -305,6 +332,10 @@ where
                             // of them deep, inside a `select!` inside a spawn.
                             Box::pin(loaded.open(&client, root_id)).await;
                             loaded.publish_thread(&on_thread);
+                        }
+                        // Boxed for the reason the two above are.
+                        Some(Ask::Read(event_id, public)) => {
+                            Box::pin(loaded.mark_read(&room, event_id, public)).await;
                         }
                     }
                 }
@@ -462,6 +493,17 @@ struct Loaded {
     /// Who was last reported as typing, so an unchanged list is not
     /// republished on every sync for as long as somebody keeps typing.
     typing: Vec<String>,
+    /// Where this account had stopped reading when the room was opened.
+    ///
+    /// Read once and then left alone. See [`Timeline::read_up_to`] for why it
+    /// must not follow the marker it came from.
+    read_up_to: Option<String>,
+    /// The message this watcher last sent a receipt for.
+    ///
+    /// The whole of the throttling. A reader sitting at the bottom of a room
+    /// asks for the same message to be marked read on every scroll and every
+    /// arriving sync, and without this each of those would be a request.
+    marked: Option<String>,
 }
 
 /// One thread being watched alongside the room.
@@ -498,6 +540,8 @@ impl Loaded {
             loading: true,
             loading_after: false,
             typing: Vec::new(),
+            read_up_to: None,
+            marked: None,
         }
     }
 
@@ -851,6 +895,42 @@ impl Loaded {
         }
     }
 
+    /// Say that everything up to and including `event_id` has been read.
+    ///
+    /// Dropped when it names the message this watcher last sent, which is what
+    /// keeps a reader sitting still in a quiet room from sending a receipt per
+    /// scroll event. Recorded before the request rather than after it, so a
+    /// homeserver that is slow to answer does not collect a queue of asks for
+    /// the same message behind it.
+    ///
+    /// A failure is logged rather than raised. There is nothing to say to
+    /// somebody about a receipt that did not go out: the room is still drawn,
+    /// the count settles on the next one, and a dialog about it would be a
+    /// dialog about bookkeeping.
+    async fn mark_read(&mut self, room: &Room, event_id: String, public: bool) {
+        if !self.worth_sending(&event_id) {
+            return;
+        }
+
+        if let Err(error) = crate::receipts::mark_read(room, &event_id, public).await {
+            tracing::warn!(%error, room_id = %self.room_id, %event_id, "could not send a read receipt");
+        }
+    }
+
+    /// Whether a receipt for `event_id` is worth a request, recording it if so.
+    ///
+    /// Recording and answering in one step on purpose. Two callers cannot race
+    /// here, because every ask is answered on the watcher's own task in the
+    /// order it arrived, and a check that did not record would let the second
+    /// of two identical asks through while the first was still in flight.
+    fn worth_sending(&mut self, event_id: &str) -> bool {
+        if self.marked.as_deref() == Some(event_id) {
+            return false;
+        }
+        self.marked = Some(event_id.to_owned());
+        true
+    }
+
     /// Add whichever of `events` are replies in the open thread.
     ///
     /// Reports whether the panel changed.
@@ -998,6 +1078,7 @@ impl Loaded {
             focus: self.focus.clone(),
             loading: self.loading,
             loading_after: self.loading_after,
+            read_up_to: self.read_up_to.clone(),
         });
     }
 }
@@ -1220,6 +1301,35 @@ mod tests {
         loaded.read(&[readable("$said:example.org")]);
 
         assert!(loaded.waiting.is_empty());
+    }
+
+    #[test]
+    fn the_same_message_is_only_marked_read_once() {
+        // A reader sitting still at the bottom of a room asks for this on
+        // every scroll and every arriving sync. Without the guard each of
+        // those is a request to the homeserver saying what the last one said.
+        let mut loaded = Loaded::new("!room:example.org".to_owned(), None);
+
+        assert!(loaded.worth_sending("$said:example.org"));
+        assert!(!loaded.worth_sending("$said:example.org"));
+    }
+
+    #[test]
+    fn a_newer_message_is_marked_read_after_an_older_one() {
+        let mut loaded = Loaded::new("!room:example.org".to_owned(), None);
+        loaded.worth_sending("$first:example.org");
+
+        assert!(loaded.worth_sending("$second:example.org"));
+    }
+
+    #[test]
+    fn a_room_nobody_has_read_draws_no_line() {
+        // The absence is the answer rather than a position to guess at. A
+        // marker invented for a room with none would put "new messages" above
+        // the whole of a conversation somebody is opening for the first time.
+        let loaded = Loaded::new("!room:example.org".to_owned(), None);
+
+        assert_eq!(loaded.read_up_to, None);
     }
 
     #[test]

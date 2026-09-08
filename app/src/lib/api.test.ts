@@ -42,8 +42,11 @@ import {
   timelineGoTo,
   timelineReact,
   timelineReply,
+  timelineMarkRead,
   timelineTyping,
   timelineUnreact,
+  privacySettings,
+  setPrivacySettings,
   resendState,
   roomAvatar,
   setAudioSettings,
@@ -94,6 +97,8 @@ const rooms: Rooms = {
           avatar: null,
           joined: true,
           participants: [],
+          unread: 0,
+          mentions: 0,
         },
         {
           id: "!unknown:example.org",
@@ -102,6 +107,8 @@ const rooms: Rooms = {
           avatar: null,
           joined: false,
           participants: [],
+          unread: 0,
+          mentions: 0,
         },
       ],
     },
@@ -389,6 +396,31 @@ describe("event subscriptions", () => {
     expect(invoke).toHaveBeenCalledWith("timeline_typing", {
       roomId: "!general:example.org",
       typing: true,
+    });
+  });
+
+  it("marks a message read without naming the room", async () => {
+    // The room is whichever one is open, which Rust already knows. Passing it
+    // from here would let a receipt for the room just left arrive after the
+    // room change and be answered by the new room's watcher.
+    await timelineMarkRead("$said:example.org");
+
+    expect(invoke).toHaveBeenCalledWith("timeline_mark_read", {
+      eventId: "$said:example.org",
+    });
+  });
+
+  it("reads what this account tells other people about itself", async () => {
+    await privacySettings();
+
+    expect(invoke).toHaveBeenCalledWith("privacy_settings");
+  });
+
+  it("saves the whole privacy section rather than one field", async () => {
+    await setPrivacySettings({ publicReadReceipts: false });
+
+    expect(invoke).toHaveBeenCalledWith("set_privacy_settings", {
+      privacy: { publicReadReceipts: false },
     });
   });
 

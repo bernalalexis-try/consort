@@ -21,6 +21,7 @@ const timelineTyping = vi.hoisted(() => vi.fn());
 const timelineSend = vi.hoisted(() => vi.fn());
 const timelineReply = vi.hoisted(() => vi.fn());
 const timelineCopyLink = vi.hoisted(() => vi.fn());
+const timelineMarkRead = vi.hoisted(() => vi.fn());
 const memberNames = vi.hoisted(() => vi.fn());
 const memberAvatar = vi.hoisted(() => vi.fn());
 const resendState = vi.hoisted(() => vi.fn());
@@ -50,6 +51,7 @@ vi.mock("../lib/api", async (importOriginal) => ({
   timelineSend,
   timelineReply,
   timelineCopyLink,
+  timelineMarkRead,
   memberNames,
   memberAvatar,
   resendState,
@@ -75,6 +77,8 @@ const general: Channel = {
   avatar: null,
   joined: true,
   participants: [],
+  unread: 0,
+  mentions: 0,
 };
 
 const lounge: Channel = { ...general, id: "!lounge:example.org", name: "Lounge", kind: "voice" };
@@ -137,6 +141,13 @@ let publishTyping: (typing: Typing) => void;
 beforeEach(() => {
   resetAvatarCache();
   resetPresenceCache();
+  /*
+    jsdom has no `scrollIntoView`, and the pane calls it twice: to open a room
+    at where reading stopped, and to go to a message somebody linked. Replaced
+    fresh each time rather than once, because the tests that assert on it
+    install their own and would otherwise leak into whatever ran next.
+  */
+  Element.prototype.scrollIntoView = vi.fn();
   publish = () => {};
   publishThread = () => {};
   publishTyping = () => {};
@@ -163,6 +174,7 @@ beforeEach(() => {
   timelineSend.mockReset().mockResolvedValue(undefined);
   timelineReply.mockReset().mockResolvedValue(undefined);
   timelineCopyLink.mockReset().mockResolvedValue(undefined);
+  timelineMarkRead.mockReset().mockResolvedValue(undefined);
   memberNames.mockReset().mockResolvedValue({ [ADA]: "Ada", [BOB]: "Bob" });
   memberAvatar.mockReset().mockResolvedValue(null);
   resendState.mockReset().mockResolvedValue(undefined);
@@ -656,6 +668,162 @@ describe("RoomTimeline", () => {
     });
 
     expect(screen.getByRole("log").scrollTop).toBe(200);
+  });
+
+  it("says the newest message has been read once the reader is at the bottom", async () => {
+    // A room short enough not to scroll is at the bottom of itself, which is
+    // the case that has to work without anybody touching the mouse.
+    fakeScrolling(300, 300);
+    await pane();
+
+    await arrive(timeline([said("$1", ADA, "hello"), said("$2", BOB, "hi")]));
+
+    expect(timelineMarkRead).toHaveBeenCalledWith("$2");
+  });
+
+  it("says nothing has been read while the reader is scrolled up", async () => {
+    // Claiming otherwise is not recoverable. A public receipt cannot be taken
+    // back, so the rule has to be one that can only ever under-claim.
+    fakeScrolling(900, 300);
+    await pane();
+    await arrive(timeline([said("$1", ADA, "hello"), said("$2", BOB, "hi")]));
+    timelineMarkRead.mockClear();
+
+    await scrollTo(100);
+
+    expect(timelineMarkRead).not.toHaveBeenCalled();
+  });
+
+  it("says nothing has been read inside a window somebody jumped into", async () => {
+    // Those messages are from last March. A receipt naming one would move this
+    // account's marker backwards and make every unread count jump.
+    fakeScrolling(300, 300);
+    await pane();
+
+    await arrive(
+      timeline([said("$old", ADA, "last March")], { focus: "$old" }),
+    );
+
+    expect(timelineMarkRead).not.toHaveBeenCalled();
+  });
+
+  it("names the room's newest message rather than the one that was read", async () => {
+    // The receipt says how far reading got, and at the bottom of the room that
+    // is the end of it, whatever the marker the room opened with said.
+    fakeScrolling(300, 300);
+    await pane();
+
+    await arrive(
+      timeline([said("$1", ADA, "read"), said("$2", BOB, "new")], {
+        readUpTo: "$1",
+      }),
+    );
+
+    expect(timelineMarkRead).toHaveBeenCalledWith("$2");
+  });
+
+  it("does not mark a busy room read the moment it is opened at the line", async () => {
+    // The landing moves the scroll during the same commit that measured it,
+    // so the measurement is already stale by the time a receipt could be sent
+    // on it. Getting this wrong marks every unread room read on sight.
+    fakeScrolling(900, 300);
+    Element.prototype.scrollIntoView = function scrollIntoView(this: Element) {
+      // What a browser does and what jsdom does not: actually move the box.
+      screen.getByRole("log").scrollTop = 0;
+    };
+    await pane();
+
+    await arrive(
+      timeline([said("$1", ADA, "read"), said("$2", BOB, "new")], {
+        readUpTo: "$1",
+      }),
+    );
+
+    expect(timelineMarkRead).not.toHaveBeenCalled();
+  });
+
+  it("draws a line where reading stopped", async () => {
+    await pane();
+
+    await arrive(
+      timeline([said("$1", ADA, "read"), said("$2", BOB, "new")], {
+        readUpTo: "$1",
+      }),
+    );
+
+    expect(screen.getByText("New messages")).toBeInTheDocument();
+  });
+
+  it("draws no line in a room with nothing new in it", async () => {
+    await pane();
+
+    await arrive(
+      timeline([said("$1", ADA, "read"), said("$2", BOB, "also read")], {
+        readUpTo: "$2",
+      }),
+    );
+
+    expect(screen.queryByText("New messages")).not.toBeInTheDocument();
+  });
+
+  it("draws no line in a room this account has never read", async () => {
+    await pane();
+
+    await arrive(timeline([said("$1", ADA, "hello")]));
+
+    expect(screen.queryByText("New messages")).not.toBeInTheDocument();
+  });
+
+  it("draws no line when the marker names something outside the window", async () => {
+    // A room somebody read a year ago and has not opened since. The marker is
+    // real and the message it names is not loaded, and a line drawn anyway
+    // would sit above the whole of what is on screen.
+    await pane();
+
+    await arrive(
+      timeline([said("$1", ADA, "hello")], { readUpTo: "$gone" }),
+    );
+
+    expect(screen.queryByText("New messages")).not.toBeInTheDocument();
+  });
+
+  it("opens the room at the line rather than at the bottom", async () => {
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+    fakeScrolling(900, 300);
+    await pane();
+
+    await arrive(
+      timeline([said("$1", ADA, "read"), said("$2", BOB, "new")], {
+        readUpTo: "$1",
+      }),
+    );
+
+    expect(scrollIntoView).toHaveBeenCalled();
+  });
+
+  it("opens at the line once rather than on every message that arrives", async () => {
+    // The line stays drawn while the room is read. Landing on it again would
+    // drag somebody back to it every time anybody spoke.
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+    fakeScrolling(900, 300);
+    await pane();
+    await arrive(
+      timeline([said("$1", ADA, "read"), said("$2", BOB, "new")], {
+        readUpTo: "$1",
+      }),
+    );
+    scrollIntoView.mockClear();
+
+    await arrive(
+      timeline(
+        [said("$1", ADA, "read"), said("$2", BOB, "new"), said("$3", ADA, "more")],
+        { readUpTo: "$1" },
+      ),
+    );
+
+    expect(scrollIntoView).not.toHaveBeenCalled();
   });
 
   it("says a page is on its way rather than looking like nothing happened", async () => {

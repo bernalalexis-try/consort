@@ -65,8 +65,17 @@
   would be a gutter down the whole list, kept empty by every text channel and
   by every voice channel nobody is pointing at.
 */
+/*
+  Flex rather than a plain block, so the mention badge is a real item at the end
+  of the row and the channel name gives up its width before the count does. Still
+  positioned, because the control that reads a voice channel is drawn over the
+  row rather than in it.
+*/
 .channels__row {
   position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
 }
 
 .channels__entry {
@@ -74,7 +83,8 @@
   grid-template-columns: 20px minmax(0, 1fr);
   gap: var(--space-2);
   align-items: center;
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   padding: var(--space-2);
   color: var(--text-muted);
   text-align: left;
@@ -94,6 +104,24 @@
 .channels__entry[data-selected="true"] {
   color: var(--text-primary);
   background: var(--surface-overlay);
+}
+
+/*
+  Something has been said here since this account last looked.
+
+  White text and a heavier weight, which is what every client that has ever
+  drawn an unread channel does, and it is the right treatment: it survives being
+  scanned rather than read, and it costs no width on a row that has none to
+  spare. Deliberately not a colour, which is spoken for twice over here, by mint
+  for voice and gold for a mention.
+
+  Not applied to a selected channel. The channel being read is on its way to
+  read, and the selected treatment is already the strongest thing on the row:
+  two of them at once would leave nothing for the selection to say.
+*/
+.channels__entry[data-unread="true"]:not([data-selected="true"]) {
+  color: var(--text-primary);
+  font-weight: 600;
 }
 
 .channels__entry:focus-visible {
@@ -397,4 +425,42 @@
 .channels__camera[data-on="true"] {
   color: var(--mint);
   opacity: 1;
+}
+
+/*
+  Somebody said your name, and how many times.
+
+  Gold, which the tokens reserve for exactly this: mint is voice, amber is the
+  connection, and a room where three colours mean three things only works while
+  each of them means one.
+
+  Outside the button that opens the channel, so it never becomes a second thing
+  to click, and `flex-shrink: 0` so a long channel name gives up its width
+  before the count does. Tabular figures because the badge is a fixed shape that
+  a changing number should not resize.
+*/
+.channels__mentions {
+  flex-shrink: 0;
+  order: 1;
+  min-width: 18px;
+  padding: 0 var(--space-1);
+  font-size: var(--text-xs);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 18px;
+  text-align: center;
+  color: var(--surface-void);
+  background: var(--gold);
+  border-radius: 9px;
+}
+
+/*
+  Room for the control that reads a voice channel, which is absolutely
+  positioned over the right of the row and would otherwise be drawn on top of
+  the count. Reserved rather than resolved on hover: the control appears when
+  the pointer arrives, and a badge that jumped sideways to make way for it would
+  move the thing somebody was reading.
+*/
+.channels__row[data-chat="true"] .channels__mentions {
+  margin-right: calc(24px + var(--space-1));
 }

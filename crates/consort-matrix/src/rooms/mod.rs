@@ -326,6 +326,8 @@ mod tests {
             avatar: None,
             joined: true,
             participants,
+            unread: 0,
+            mentions: 0,
         }
     }
 

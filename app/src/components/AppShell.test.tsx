@@ -99,11 +99,19 @@ const EMPTY_HOME: Rooms = {
 };
 
 function voice(id: string, name: string): Channel {
-  return { id, name, kind: "voice", avatar: null, joined: true, participants: [] };
+  return { id, name, kind: "voice", avatar: null, joined: true,
+    participants: [],
+    unread: 0,
+    mentions: 0,
+  };
 }
 
 function textChannel(id: string, name: string): Channel {
-  return { id, name, kind: "text", avatar: null, joined: true, participants: [] };
+  return { id, name, kind: "text", avatar: null, joined: true,
+    participants: [],
+    unread: 0,
+    mentions: 0,
+  };
 }
 
 function shell({

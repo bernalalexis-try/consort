@@ -1,4 +1,4 @@
-import { useState, type RefObject } from "react";
+import { Fragment, useState, type RefObject } from "react";
 
 import type { Message, MessageKind, Participant } from "../lib/api";
 import { flashMessage } from "../lib/flash";
@@ -36,6 +36,30 @@ export interface Group {
   sender: string;
   at: number;
   messages: Message[];
+}
+
+/**
+ * The first message that arrived after `readUpTo`, if any is loaded.
+ *
+ * What the "new messages" line is drawn above. Undefined when nothing has been
+ * read here, when the marker names the newest message loaded, and when it names
+ * something outside the window: in all three there is nothing new to point at,
+ * and a line drawn anyway would either sit above the whole room or below the
+ * end of it.
+ *
+ * Exported for the tests, on the same terms as [`group`] below: the rule is
+ * the part worth pinning and the markup is not.
+ */
+export function firstUnread(
+  messages: Message[],
+  readUpTo: string | undefined,
+): string | undefined {
+  if (readUpTo === undefined) return undefined;
+
+  const at = messages.findIndex((message) => message.id === readUpTo);
+  if (at === -1) return undefined;
+
+  return messages[at + 1]?.id;
 }
 
 /**
@@ -242,6 +266,25 @@ function ThreadIcon() {
 }
 
 /**
+ * Where this account stopped reading.
+ *
+ * A rule with a word on it rather than a bare line, because a bare line in a
+ * conversation is a divider and reads as one: somebody scrolling past it would
+ * take it for the start of a day or a gap in the history. The words are what
+ * make it a place.
+ *
+ * Not focusable and not a control. Nothing happens when it is pressed, and the
+ * room scrolls to it on its own when it opens.
+ */
+function NewMessagesLine() {
+  return (
+    <p className="timeline__unread" role="separator" data-unread-line="true">
+      <span className="timeline__unread-said">New messages</span>
+    </p>
+  );
+}
+
+/**
  * A run of grouped messages, drawn.
  *
  * Its own component because a thread panel draws the same thing beside the
@@ -268,6 +311,7 @@ export function MessageGroups({
   onReact,
   onCopyLink,
   onGoTo,
+  newFrom,
 }: {
   groups: Group[];
   /** Display names by user ID, for whoever the room has told us about. */
@@ -355,6 +399,15 @@ export function MessageGroups({
   onReact?: (eventId: string, key: string, mine: string | undefined) => void;
   /** Put one message's address on the clipboard. */
   onCopyLink?: (eventId: string) => void;
+  /**
+   * The first message that arrived after this account last read here.
+   *
+   * The "new messages" line is drawn above it. Absent inside a thread panel,
+   * which has no marker of its own: `m.fully_read` is per room, and drawing
+   * the room's line inside a thread would put it somewhere it does not
+   * describe. See [`firstUnread`], which is where the caller gets this.
+   */
+  newFrom?: string | undefined;
   /**
    * Go to a message that is named by a reply but is not drawn.
    *
@@ -451,129 +504,182 @@ export function MessageGroups({
           );
 
         return (
-          <article
-            className="timeline__group"
-            key={one.id}
-            aria-label={`${who} at ${timeOf(one.at)}`}
-          >
-            {/*
-              Two controls opening one card. The face is the larger target and
-              the name is the one being read, and a hand goes for either.
-            */}
-            <button
-              type="button"
-              className="timeline__face-button"
-              aria-haspopup="dialog"
-              aria-label={`${who}'s picture`}
-              onClick={about}
+          /*
+            A fragment because the line, when it falls here, belongs above the
+            group rather than inside it: drawn within the article it would sit
+            under the byline, which reads as the person having said it.
+          */
+          <Fragment key={one.id}>
+            {one.messages[0]?.id === newFrom && <NewMessagesLine />}
+            <article
+              className="timeline__group"
+              aria-label={`${who} at ${timeOf(one.at)}`}
             >
-              <RoomAvatar
-                roomId={roomId}
-                userId={one.sender}
-                name={who}
-                className="timeline__face"
-              />
-              <PresenceDot userId={one.sender} />
-            </button>
-            <div className="timeline__said">
-              <p className="timeline__byline">
-                <button
-                  type="button"
-                  className="timeline__who"
-                  aria-haspopup="dialog"
-                  onClick={about}
-                >
-                  {who}
-                </button>
-                {/*
-                  The whole date lives here rather than on the words. A tooltip
-                  that follows the pointer across every sentence in a room
-                  appears over the one thing somebody is reading; the clock
-                  time is already the thing being asked about.
-                */}
-                <time
-                  className="timeline__at"
-                  dateTime={new Date(one.at).toISOString()}
-                  title={dateOf(one.at)}
-                >
-                  {timeOf(one.at)}
-                </time>
-              </p>
-              {one.messages.map((message) => {
-                const open = opening(message);
-
-                const answered =
-                  message.replyTo === undefined
-                    ? undefined
-                    : known?.get(message.replyTo);
-
-                return (
-                  <div
-                    key={message.id}
-                    className="timeline__message"
-                    data-message-id={message.id}
-                    {...(message.mentions?.includes(selfId)
-                      ? { "data-mentions-me": "true" }
-                      : {})}
+              {/*
+                Two controls opening one card. The face is the larger target and
+                the name is the one being read, and a hand goes for either.
+              */}
+              <button
+                type="button"
+                className="timeline__face-button"
+                aria-haspopup="dialog"
+                aria-label={`${who}'s picture`}
+                onClick={about}
+              >
+                <RoomAvatar
+                  roomId={roomId}
+                  userId={one.sender}
+                  name={who}
+                  className="timeline__face"
+                />
+                <PresenceDot userId={one.sender} />
+              </button>
+              <div className="timeline__said">
+                <p className="timeline__byline">
+                  <button
+                    type="button"
+                    className="timeline__who"
+                    aria-haspopup="dialog"
+                    onClick={about}
                   >
-                    {message.replyTo !== undefined &&
-                      (answered === undefined ? (
-                        <p className="timeline__reply timeline__reply--gone">
-                          <ReplyIcon className="timeline__reply-glyph" />
-                          <span className="timeline__reply-said">
-                            Replying to a message that is not loaded.
-                          </span>
-                        </p>
-                      ) : (
-                        <button
-                          type="button"
-                          className="timeline__reply"
-                          aria-label={`Go to ${names[answered.sender] ?? answered.sender}'s message`}
-                          onClick={() => {
-                            /*
-                              Drawn first, because a message on screen is
-                              already where somebody asked to be and asking
-                              the homeserver for it would throw away the
-                              conversation around it to arrive back at the
-                              same place. The fall-through is the reply that
-                              names something older than what is loaded.
-                            */
-                            if (
-                              !flashMessage(container?.current ?? null, answered.id)
-                            ) {
-                              onGoTo?.(answered.id);
-                            }
-                          }}
-                        >
-                          <ReplyIcon className="timeline__reply-glyph" />
-                          <span className="timeline__reply-who">
-                            {names[answered.sender] ?? answered.sender}
-                          </span>
-                          <span className="timeline__reply-said">
-                            {previewOf(answered, nameOf)}
-                          </span>
-                        </button>
-                      ))}
-                    {message.media !== undefined ? (
-                      /*
-                        The attachment, and under it whatever words were sent
-                        with it. The filename is on the card rather than above
-                        the picture: a line reading "screenshot.png" over the
-                        screenshot is what somebody sent a picture to avoid. A
-                        caption is a different thing and is drawn, which is how
-                        a bot's quoted post survives the clip it came with.
-                      */
-                      <div className="timeline__attachment">
-                        <MessageMedia
-                          kind={attachmentKind(message.kind)}
-                          media={message.media}
-                        />
-                        {message.body !== "" && (
+                    {who}
+                  </button>
+                  {/*
+                    The whole date lives here rather than on the words. A tooltip
+                    that follows the pointer across every sentence in a room
+                    appears over the one thing somebody is reading; the clock
+                    time is already the thing being asked about.
+                  */}
+                  <time
+                    className="timeline__at"
+                    dateTime={new Date(one.at).toISOString()}
+                    title={dateOf(one.at)}
+                  >
+                    {timeOf(one.at)}
+                  </time>
+                </p>
+                {one.messages.map((message) => {
+                  const open = opening(message);
+
+                  const answered =
+                    message.replyTo === undefined
+                      ? undefined
+                      : known?.get(message.replyTo);
+
+                  return (
+                    <Fragment key={message.id}>
+                      {/*
+                        The other half of the same line. A group is one person
+                        talking without pause, so the last thing read and the
+                        first thing new are regularly two messages inside one of
+                        them. Skipped for the group's first message, which the
+                        fragment above has already drawn it for.
+                      */}
+                      {message.id === newFrom &&
+                        message.id !== one.messages[0]?.id && <NewMessagesLine />}
+                      <div
+                        className="timeline__message"
+                        data-message-id={message.id}
+                        {...(message.mentions?.includes(selfId)
+                          ? { "data-mentions-me": "true" }
+                          : {})}
+                      >
+                        {message.replyTo !== undefined &&
+                          (answered === undefined ? (
+                            <p className="timeline__reply timeline__reply--gone">
+                              <ReplyIcon className="timeline__reply-glyph" />
+                              <span className="timeline__reply-said">
+                                Replying to a message that is not loaded.
+                              </span>
+                            </p>
+                          ) : (
+                            <button
+                              type="button"
+                              className="timeline__reply"
+                              aria-label={`Go to ${names[answered.sender] ?? answered.sender}'s message`}
+                              onClick={() => {
+                                /*
+                                  Drawn first, because a message on screen is
+                                  already where somebody asked to be and asking
+                                  the homeserver for it would throw away the
+                                  conversation around it to arrive back at the
+                                  same place. The fall-through is the reply that
+                                  names something older than what is loaded.
+                                */
+                                if (
+                                  !flashMessage(container?.current ?? null, answered.id)
+                                ) {
+                                  onGoTo?.(answered.id);
+                                }
+                              }}
+                            >
+                              <ReplyIcon className="timeline__reply-glyph" />
+                              <span className="timeline__reply-who">
+                                {names[answered.sender] ?? answered.sender}
+                              </span>
+                              <span className="timeline__reply-said">
+                                {previewOf(answered, nameOf)}
+                              </span>
+                            </button>
+                          ))}
+                        {message.media !== undefined ? (
+                          /*
+                            The attachment, and under it whatever words were sent
+                            with it. The filename is on the card rather than above
+                            the picture: a line reading "screenshot.png" over the
+                            screenshot is what somebody sent a picture to avoid. A
+                            caption is a different thing and is drawn, which is how
+                            a bot's quoted post survives the clip it came with.
+                          */
+                          <div className="timeline__attachment">
+                            <MessageMedia
+                              kind={attachmentKind(message.kind)}
+                              media={message.media}
+                            />
+                            {message.body !== "" && (
+                              <div
+                                className="timeline__body"
+                                data-selectable
+                                onClick={open}
+                              >
+                                {message.html === undefined ? (
+                                  <PlainBody text={message.body} />
+                                ) : (
+                                  <FormattedBody html={message.html} />
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                          /*
+                            A `div` rather than a `p`, because a formatted body can
+                            be a heading or a list and a paragraph may hold neither.
+                            One element for both kinds beats two that have to be
+                            kept looking alike.
+
+                            `data-selectable` because the shell turns selection off,
+                            dragging across the chrome of a desktop application
+                            never being deliberate. A message is what a reader does
+                            mean to select, and opting back in is also what puts a
+                            text cursor over the words instead of an arrow.
+
+                            The click is not on a button, and deliberately. A
+                            message can hold links, and a link inside a button is
+                            both invalid and unreachable from the keyboard, so
+                            wrapping one would break every link in a threaded
+                            message. The control below is what the keyboard uses.
+                          */
                           <div
-                            className="timeline__body"
+                            className={
+                              message.html === undefined
+                                ? "timeline__body"
+                                : "timeline__body timeline__body--rich"
+                            }
+                            data-kind={message.kind}
                             data-selectable
                             onClick={open}
                           >
+                            {message.kind === "emote" && `${who} `}
                             {message.html === undefined ? (
                               <PlainBody text={message.body} />
                             ) : (
@@ -581,196 +687,160 @@ export function MessageGroups({
                             )}
                           </div>
                         )}
-                      </div>
-                    ) : (
-                      /*
-                        A `div` rather than a `p`, because a formatted body can
-                        be a heading or a list and a paragraph may hold neither.
-                        One element for both kinds beats two that have to be
-                        kept looking alike.
-
-                        `data-selectable` because the shell turns selection off,
-                        dragging across the chrome of a desktop application
-                        never being deliberate. A message is what a reader does
-                        mean to select, and opting back in is also what puts a
-                        text cursor over the words instead of an arrow.
-
-                        The click is not on a button, and deliberately. A
-                        message can hold links, and a link inside a button is
-                        both invalid and unreachable from the keyboard, so
-                        wrapping one would break every link in a threaded
-                        message. The control below is what the keyboard uses.
-                      */
-                      <div
-                        className={
-                          message.html === undefined
-                            ? "timeline__body"
-                            : "timeline__body timeline__body--rich"
-                        }
-                        data-kind={message.kind}
-                        data-selectable
-                        onClick={open}
-                      >
-                        {message.kind === "emote" && `${who} `}
-                        {message.html === undefined ? (
-                          <PlainBody text={message.body} />
-                        ) : (
-                          <FormattedBody html={message.html} />
-                        )}
-                      </div>
-                    )}
-                    {message.thread !== undefined &&
-                      onOpenThread !== undefined && (
-                        <button
-                          type="button"
-                          className="timeline__thread"
-                          data-participated={String(
-                            message.thread.participated,
-                          )}
-                          data-opening={String(openingId === message.id)}
-                          disabled={openingId === message.id}
-                          onClick={() => onOpenThread(message.id)}
-                        >
-                          {message.thread.count}{" "}
-                          {message.thread.count === 1 ? "reply" : "replies"}
-                        </button>
-                      )}
-                    {message.reactions !== undefined &&
-                      message.reactions.length > 0 && (
-                        <div className="timeline__reactions">
-                          {message.reactions.map((one) => (
+                        {message.thread !== undefined &&
+                          onOpenThread !== undefined && (
                             <button
-                              key={one.key}
                               type="button"
-                              className="timeline__reaction"
-                              aria-pressed={one.mine !== undefined}
-                              aria-label={`${one.key}, ${one.count}`}
-                              disabled={onReact === undefined}
-                              onClick={() =>
-                                onReact?.(message.id, one.key, one.mine)
-                              }
+                              className="timeline__thread"
+                              data-participated={String(
+                                message.thread.participated,
+                              )}
+                              data-opening={String(openingId === message.id)}
+                              disabled={openingId === message.id}
+                              onClick={() => onOpenThread(message.id)}
                             >
-                              <span aria-hidden="true">{one.key}</span>
-                              <span
-                                className="timeline__reaction-count"
-                                aria-hidden="true"
-                              >
-                                {one.count}
-                              </span>
+                              {message.thread.count}{" "}
+                              {message.thread.count === 1 ? "reply" : "replies"}
                             </button>
-                          ))}
-                          {/*
-                            One more item in the row, drawn quieter than a
-                            pill: it is an action rather than something
-                            anybody has said. Only here, because a message
-                            with no reactions has nothing for it to sit beside
-                            and the toolbar is where its first one comes from.
-                          */}
+                          )}
+                        {message.reactions !== undefined &&
+                          message.reactions.length > 0 && (
+                            <div className="timeline__reactions">
+                              {message.reactions.map((one) => (
+                                <button
+                                  key={one.key}
+                                  type="button"
+                                  className="timeline__reaction"
+                                  aria-pressed={one.mine !== undefined}
+                                  aria-label={`${one.key}, ${one.count}`}
+                                  disabled={onReact === undefined}
+                                  onClick={() =>
+                                    onReact?.(message.id, one.key, one.mine)
+                                  }
+                                >
+                                  <span aria-hidden="true">{one.key}</span>
+                                  <span
+                                    className="timeline__reaction-count"
+                                    aria-hidden="true"
+                                  >
+                                    {one.count}
+                                  </span>
+                                </button>
+                              ))}
+                              {/*
+                                One more item in the row, drawn quieter than a
+                                pill: it is an action rather than something
+                                anybody has said. Only here, because a message
+                                with no reactions has nothing for it to sit beside
+                                and the toolbar is where its first one comes from.
+                              */}
+                              {onReact !== undefined && (
+                                <span className="timeline__add">
+                                  <button
+                                    type="button"
+                                    className="timeline__add-key"
+                                    aria-label="Add a reaction"
+                                    title="Add a reaction"
+                                    aria-expanded={
+                                      picking?.id === message.id &&
+                                      picking.at === "row"
+                                    }
+                                    onClick={() => toggle(message.id, "row")}
+                                  >
+                                    <ReactIcon />
+                                  </button>
+                                  {pickerFor(message, "row")}
+                                </span>
+                              )}
+                            </div>
+                          )}
+                        {/*
+                          What can be done to this message. Last in the row, so the
+                          words are read before the things that can be done to
+                          them, and quiet until the message is hovered or something
+                          in it takes focus.
+                        */}
+                        <div className="timeline__actions">
+                          {onReply !== undefined && (
+                            <button
+                              type="button"
+                              className="timeline__action"
+                              aria-label="Reply"
+                              title="Reply"
+                              onClick={() => onReply(message)}
+                            >
+                              <ReplyIcon className="timeline__action-glyph" />
+                            </button>
+                          )}
                           {onReact !== undefined && (
-                            <span className="timeline__add">
+                            <button
+                              type="button"
+                              className="timeline__action"
+                              aria-label="React"
+                              title="React"
+                              aria-expanded={
+                                picking?.id === message.id &&
+                                picking.at === "toolbar"
+                              }
+                              onClick={() => toggle(message.id, "toolbar")}
+                            >
+                              <ReactIcon />
+                            </button>
+                          )}
+                          {/*
+                            Only on a message with no thread yet: the count above
+                            already opens the ones that have one.
+                          */}
+                          {message.thread === undefined &&
+                            onOpenThread !== undefined && (
                               <button
                                 type="button"
-                                className="timeline__add-key"
-                                aria-label="Add a reaction"
-                                title="Add a reaction"
-                                aria-expanded={
-                                  picking?.id === message.id &&
-                                  picking.at === "row"
-                                }
-                                onClick={() => toggle(message.id, "row")}
+                                className="timeline__action"
+                                aria-label="Reply in thread"
+                                title="Reply in thread"
+                                disabled={openingId === message.id}
+                                onClick={() => onOpenThread(message.id)}
                               >
-                                <ReactIcon />
+                                <ThreadIcon />
                               </button>
-                              {pickerFor(message, "row")}
-                            </span>
+                            )}
+                          {onCopyLink !== undefined && (
+                            /*
+                              The address, on the clipboard, rather than a panel
+                              offering five services to post it to. Pasting it
+                              somewhere is what almost everybody wanted, and the
+                              glyph turning into a tick is how they are told it
+                              worked: a copy is silent otherwise, and a silent
+                              control invites a second press.
+                            */
+                            <button
+                              type="button"
+                              className="timeline__action"
+                              data-done={String(copiedId === message.id)}
+                              aria-label={
+                                copiedId === message.id ? "Link copied" : "Copy link"
+                              }
+                              title={
+                                copiedId === message.id ? "Link copied" : "Copy link"
+                              }
+                              onClick={() => onCopyLink(message.id)}
+                            >
+                              {copiedId === message.id ? (
+                                <CopiedIcon />
+                              ) : (
+                                <LinkIcon />
+                              )}
+                            </button>
                           )}
+                          {pickerFor(message, "toolbar")}
                         </div>
-                      )}
-                    {/*
-                      What can be done to this message. Last in the row, so the
-                      words are read before the things that can be done to
-                      them, and quiet until the message is hovered or something
-                      in it takes focus.
-                    */}
-                    <div className="timeline__actions">
-                      {onReply !== undefined && (
-                        <button
-                          type="button"
-                          className="timeline__action"
-                          aria-label="Reply"
-                          title="Reply"
-                          onClick={() => onReply(message)}
-                        >
-                          <ReplyIcon className="timeline__action-glyph" />
-                        </button>
-                      )}
-                      {onReact !== undefined && (
-                        <button
-                          type="button"
-                          className="timeline__action"
-                          aria-label="React"
-                          title="React"
-                          aria-expanded={
-                            picking?.id === message.id &&
-                            picking.at === "toolbar"
-                          }
-                          onClick={() => toggle(message.id, "toolbar")}
-                        >
-                          <ReactIcon />
-                        </button>
-                      )}
-                      {/*
-                        Only on a message with no thread yet: the count above
-                        already opens the ones that have one.
-                      */}
-                      {message.thread === undefined &&
-                        onOpenThread !== undefined && (
-                          <button
-                            type="button"
-                            className="timeline__action"
-                            aria-label="Reply in thread"
-                            title="Reply in thread"
-                            disabled={openingId === message.id}
-                            onClick={() => onOpenThread(message.id)}
-                          >
-                            <ThreadIcon />
-                          </button>
-                        )}
-                      {onCopyLink !== undefined && (
-                        /*
-                          The address, on the clipboard, rather than a panel
-                          offering five services to post it to. Pasting it
-                          somewhere is what almost everybody wanted, and the
-                          glyph turning into a tick is how they are told it
-                          worked: a copy is silent otherwise, and a silent
-                          control invites a second press.
-                        */
-                        <button
-                          type="button"
-                          className="timeline__action"
-                          data-done={String(copiedId === message.id)}
-                          aria-label={
-                            copiedId === message.id ? "Link copied" : "Copy link"
-                          }
-                          title={
-                            copiedId === message.id ? "Link copied" : "Copy link"
-                          }
-                          onClick={() => onCopyLink(message.id)}
-                        >
-                          {copiedId === message.id ? (
-                            <CopiedIcon />
-                          ) : (
-                            <LinkIcon />
-                          )}
-                        </button>
-                      )}
-                      {pickerFor(message, "toolbar")}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </article>
+                      </div>
+                    </Fragment>
+                  );
+                })}
+              </div>
+            </article>
+          </Fragment>
         );
       })}
     </>

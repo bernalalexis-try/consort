@@ -4943,3 +4943,330 @@ mod timeline {
         }
     }
 }
+
+/// Saying what has been read.
+///
+/// The unit tests cover which of the two receipts a setting selects and the
+/// guard that keeps a reader sitting still from sending one per scroll. What
+/// needs a homeserver is the wiring: that an ask reaching the room's watcher
+/// turns into exactly one request with the right event in it, and that a
+/// marker arriving in a sync comes back out on the published timeline.
+mod read_receipts {
+    use super::*;
+    use consort_matrix::timeline::{self, Timeline};
+    use std::time::Duration;
+
+    const ROOM: &str = "!general:example.org";
+
+    /// Accept a read-marker write, and remember what was in it.
+    ///
+    /// Its own mock rather than `mock_send_receipt`, which matches the
+    /// single-receipt endpoint. `send_multiple_receipts` writes all three at
+    /// once, to `/read_markers`, which is the whole reason it is used.
+    async fn accepting_markers(server: &MatrixMockServer) {
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path(format!(
+                "/_matrix/client/v3/rooms/{ROOM}/read_markers"
+            )))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+            .mount(server.server())
+            .await;
+    }
+
+    /// The bodies of every read-marker write the server received.
+    async fn markers(server: &MatrixMockServer) -> Vec<serde_json::Value> {
+        server
+            .server()
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .iter()
+            .filter(|request| request.url.path().ends_with("/read_markers"))
+            .filter_map(|request| serde_json::from_slice(&request.body).ok())
+            .collect()
+    }
+
+    /// Wait until the server has seen at least one read-marker write.
+    ///
+    /// Polled rather than awaited on a channel, because the receipt is sent
+    /// from the watcher's own task and nothing here holds a handle to it.
+    async fn wait_for_a_marker(server: &MatrixMockServer) -> Vec<serde_json::Value> {
+        for _ in 0..100 {
+            let seen = markers(server).await;
+            if !seen.is_empty() {
+                return seen;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        Vec::new()
+    }
+
+    #[tokio::test]
+    async fn a_public_read_sends_the_receipt_and_the_marker_in_one_request() {
+        let server = MatrixMockServer::new().await;
+        let (_dir, client) = signed_in(&server).await;
+        server
+            .sync_joined_room(&client, ruma::room_id!("!general:example.org"))
+            .await;
+        accepting_markers(&server).await;
+
+        let watch = timeline::watch(client, ROOM, |_: Timeline| {}, |_| {}, |_| {});
+        watch.mark_read("$said:example.org".to_owned(), true);
+        let seen = wait_for_a_marker(&server).await;
+        drop(watch);
+
+        assert_eq!(seen.len(), 1, "one request, not one per receipt");
+        assert_eq!(seen[0]["m.read"], "$said:example.org");
+        assert_eq!(seen[0]["m.fully_read"], "$said:example.org");
+        assert!(seen[0].get("m.read.private").is_none());
+    }
+
+    #[tokio::test]
+    async fn a_private_read_still_moves_the_marker_and_tells_the_room_nothing() {
+        let server = MatrixMockServer::new().await;
+        let (_dir, client) = signed_in(&server).await;
+        server
+            .sync_joined_room(&client, ruma::room_id!("!general:example.org"))
+            .await;
+        accepting_markers(&server).await;
+
+        let watch = timeline::watch(client, ROOM, |_: Timeline| {}, |_| {}, |_| {});
+        watch.mark_read("$said:example.org".to_owned(), false);
+        let seen = wait_for_a_marker(&server).await;
+        drop(watch);
+
+        assert_eq!(seen[0]["m.read.private"], "$said:example.org");
+        assert_eq!(seen[0]["m.fully_read"], "$said:example.org");
+        assert!(
+            seen[0].get("m.read").is_none(),
+            "a private read that also published a public one would be the setting doing nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_same_message_is_not_marked_read_twice() {
+        // A reader sitting still at the bottom of a quiet room asks for this
+        // on every scroll and every arriving sync.
+        let server = MatrixMockServer::new().await;
+        let (_dir, client) = signed_in(&server).await;
+        server
+            .sync_joined_room(&client, ruma::room_id!("!general:example.org"))
+            .await;
+        accepting_markers(&server).await;
+
+        let watch = timeline::watch(client, ROOM, |_: Timeline| {}, |_| {}, |_| {});
+        for _ in 0..5 {
+            watch.mark_read("$said:example.org".to_owned(), true);
+        }
+        wait_for_a_marker(&server).await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let seen = markers(&server).await;
+        drop(watch);
+
+        assert_eq!(seen.len(), 1, "got {seen:?}");
+    }
+
+    #[tokio::test]
+    async fn a_receipt_that_the_homeserver_refuses_does_not_end_the_watcher() {
+        // Nothing is drawn about a receipt, so a failure has nowhere to be
+        // reported and must not take the room down with it. No mock is
+        // mounted, so the write 404s.
+        let server = MatrixMockServer::new().await;
+        let (_dir, client) = signed_in(&server).await;
+        server
+            .sync_joined_room(&client, ruma::room_id!("!general:example.org"))
+            .await;
+
+        let (seen, sink) = recorder::<Timeline>();
+        let watch = timeline::watch(client, ROOM, sink, |_| {}, |_| {});
+        watch.mark_read("$gone:example.org".to_owned(), true);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        // Still answering, which is the whole assertion.
+        watch.earlier();
+        let reports = wait_until(&seen, |reports| !reports.is_empty()).await;
+        drop(watch);
+
+        assert!(!reports.is_empty());
+    }
+
+    /// A sync response saying this account has read up to `event_id`.
+    ///
+    /// Room account data rather than an ephemeral receipt, because that is
+    /// what `m.fully_read` is: it is not a receipt at all, it is a private
+    /// marker the homeserver keeps for one account.
+    async fn syncing_a_marker(server: &MatrixMockServer, event_id: &str) {
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/_matrix/client/v3/sync"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "next_batch": "s2",
+                    "rooms": {
+                        "join": {
+                            ROOM: {
+                                "timeline": { "events": [], "limited": false },
+                                "account_data": { "events": [{
+                                    "type": "m.fully_read",
+                                    "content": { "event_id": event_id },
+                                }]},
+                            },
+                        },
+                    },
+                })),
+            )
+            .mount(server.server())
+            .await;
+    }
+
+    #[tokio::test]
+    async fn a_room_reports_where_this_account_stopped_reading() {
+        let server = MatrixMockServer::new().await;
+        let (_dir, client) = signed_in(&server).await;
+        server
+            .sync_joined_room(&client, ruma::room_id!("!general:example.org"))
+            .await;
+        syncing_a_marker(&server, "$read:example.org").await;
+        client
+            .sync_once(matrix_sdk::config::SyncSettings::default())
+            .await
+            .unwrap();
+
+        let (seen, sink) = recorder::<Timeline>();
+        let watch = timeline::watch(client, ROOM, sink, |_| {}, |_| {});
+        let reports = wait_until(&seen, |reports| !reports.is_empty()).await;
+        drop(watch);
+
+        assert_eq!(
+            reports[0].read_up_to.as_deref(),
+            Some("$read:example.org"),
+            "the marker has to be read before the first page, or the line is gone by the \
+             time anybody could see it"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_room_this_account_has_never_read_reports_no_such_place() {
+        // The absence is the answer. A marker invented for a room with none
+        // would put a line above the whole of a first visit.
+        let server = MatrixMockServer::new().await;
+        let (_dir, client) = signed_in(&server).await;
+        server
+            .sync_joined_room(&client, ruma::room_id!("!general:example.org"))
+            .await;
+
+        let (seen, sink) = recorder::<Timeline>();
+        let watch = timeline::watch(client, ROOM, sink, |_| {}, |_| {});
+        let reports = wait_until(&seen, |reports| !reports.is_empty()).await;
+        drop(watch);
+
+        assert_eq!(reports[0].read_up_to, None);
+    }
+
+    /// A sync response carrying one message from somebody else.
+    async fn syncing_a_message(server: &MatrixMockServer) {
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/_matrix/client/v3/sync"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "next_batch": "s2",
+                    "rooms": {
+                        "join": {
+                            ROOM: {
+                                "timeline": { "events": [{
+                                    "type": "m.room.message",
+                                    "event_id": "$new:example.org",
+                                    "sender": "@ada:example.org",
+                                    "origin_server_ts": 5_000,
+                                    "content": { "msgtype": "m.text", "body": "hello" },
+                                }], "limited": false },
+                            },
+                        },
+                    },
+                })),
+            )
+            .mount(server.server())
+            .await;
+    }
+
+    /// What the room list says is waiting in the one room, once it settles.
+    ///
+    /// Polled because the counting happens on the event cache's own task,
+    /// which the sync response hands off to rather than waits for.
+    async fn unread_in_the_room(client: &matrix_sdk::Client) -> u64 {
+        let mut last = 0;
+        for _ in 0..100 {
+            last = consort_matrix::rooms::snapshot(client)
+                .await
+                .spaces
+                .iter()
+                .flat_map(|space| &space.channels)
+                .map(|channel| channel.unread)
+                .sum();
+            if last > 0 {
+                return last;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        last
+    }
+
+    #[tokio::test]
+    async fn a_message_nobody_has_read_is_counted_against_the_channel() {
+        // The whole of what `count_unread` is for. Without it the SDK's
+        // counters are zero for every room on the account forever, and the
+        // failure is silent: a room list that simply never marks anything.
+        let server = MatrixMockServer::new().await;
+        let (_dir, client) = signed_in(&server).await;
+        server
+            .sync_joined_room(&client, ruma::room_id!("!general:example.org"))
+            .await;
+        syncing_a_message(&server).await;
+        consort_matrix::count_unread(&client).unwrap();
+
+        client
+            .sync_once(matrix_sdk::config::SyncSettings::default())
+            .await
+            .unwrap();
+
+        assert_eq!(unread_in_the_room(&client).await, 1);
+    }
+
+    #[tokio::test]
+    async fn nothing_is_counted_without_anything_counting() {
+        // The other half, and the reason the test above is worth having: this
+        // is exactly what every build before this one did, and it looks like a
+        // room where nothing has been said.
+        let server = MatrixMockServer::new().await;
+        let (_dir, client) = signed_in(&server).await;
+        server
+            .sync_joined_room(&client, ruma::room_id!("!general:example.org"))
+            .await;
+        syncing_a_message(&server).await;
+
+        client
+            .sync_once(matrix_sdk::config::SyncSettings::default())
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        assert_eq!(unread_in_the_room(&client).await, 0);
+    }
+
+    #[tokio::test]
+    async fn a_message_that_is_not_an_event_id_is_not_sent() {
+        // Nothing reaches the homeserver, so the unmounted endpoint is the
+        // assertion: a request would 404 rather than pass quietly.
+        let server = MatrixMockServer::new().await;
+        let (_dir, client) = signed_in(&server).await;
+        server
+            .sync_joined_room(&client, ruma::room_id!("!general:example.org"))
+            .await;
+
+        let watch = timeline::watch(client, ROOM, |_: Timeline| {}, |_| {}, |_| {});
+        watch.mark_read("not an event id".to_owned(), true);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let seen = markers(&server).await;
+        drop(watch);
+
+        assert!(seen.is_empty(), "got {seen:?}");
+    }
+}

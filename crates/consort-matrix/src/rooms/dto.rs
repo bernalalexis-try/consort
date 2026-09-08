@@ -105,6 +105,34 @@ pub struct Channel {
     /// reads back, which is what the round-trip test relies on.
     #[serde(default)]
     pub participants: Vec<Participant>,
+    /// How many messages have arrived here since this account last read one.
+    ///
+    /// Counted by the SDK from the events it has cached and this account's
+    /// push rules, not taken from the homeserver's own tally: the server
+    /// cannot see inside an encrypted message, and every room worth counting
+    /// is encrypted. See [`crate::receipts::count_unread`], without which this
+    /// is zero for every room on the account.
+    ///
+    /// Zero for a channel this account has not joined, because a room we are
+    /// not in is a room we cannot read and nothing has arrived in it as far as
+    /// this account is concerned.
+    ///
+    /// A count rather than a flag, even though the interface draws it as one:
+    /// the number is what the mention badge beside it is compared against, and
+    /// a boolean here would make "unread but not mentioned" and "mentioned"
+    /// indistinguishable on the wire.
+    #[serde(default)]
+    pub unread: u64,
+    /// How many of those messages were about this account.
+    ///
+    /// A mention and an unread message are different facts and the interface
+    /// draws them differently: unread is the channel's name in white, a
+    /// mention is a number in a badge. Never larger than
+    /// [`unread`](Self::unread) in practice, and not relied on to be: the two
+    /// are counted separately and a client that assumed a relationship between
+    /// them would be inventing one.
+    #[serde(default)]
+    pub mentions: u64,
 }
 
 /// One person connected to a voice channel.
@@ -269,6 +297,8 @@ mod tests {
             avatar: None,
             joined: true,
             participants: Vec::new(),
+            unread: 0,
+            mentions: 0,
         }
     }
 
@@ -328,6 +358,30 @@ mod tests {
         .unwrap();
 
         assert_eq!(json["topic"], "Where the good links go");
+    }
+
+    #[test]
+    fn a_channel_nobody_has_read_says_how_much_is_waiting() {
+        let json = serde_json::to_value(Channel {
+            unread: 12,
+            mentions: 2,
+            ..channel()
+        })
+        .unwrap();
+
+        assert_eq!(json["unread"], 12);
+        assert_eq!(json["mentions"], 2);
+    }
+
+    #[test]
+    fn a_read_channel_still_sends_both_counts() {
+        // Not omitted when zero. The frontend compares these rather than
+        // checking for a key, and an absent number is a number it would have
+        // to default in a second place.
+        let json = serde_json::to_value(channel()).unwrap();
+
+        assert_eq!(json["unread"], 0);
+        assert_eq!(json["mentions"], 0);
     }
 
     #[test]

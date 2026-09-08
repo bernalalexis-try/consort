@@ -215,6 +215,27 @@ export interface Channel {
    * this account has not joined, whose call state it cannot see at all.
    */
   participants: Participant[];
+  /**
+   * How many messages have arrived since this account last read one here.
+   *
+   * Zero for a room this account has not joined, and zero for every room until
+   * the session has been running long enough to have seen anything: the count
+   * is made from the events the SDK has cached, not from a tally the
+   * homeserver keeps, because a homeserver cannot see inside an encrypted
+   * message.
+   *
+   * Draw it as emphasis rather than as a number. The number is here so that
+   * `mentions` can be told apart from it, not because a channel with 214
+   * unread messages is usefully different from one with 40.
+   */
+  unread: number;
+  /**
+   * How many of those were about this account.
+   *
+   * The one that gets a badge with a number in it. Do not assume any
+   * relationship to `unread`: the two are counted separately.
+   */
+  mentions: number;
 }
 
 /** One entry in the left rail, and the channels underneath it. */
@@ -1478,6 +1499,19 @@ export interface Timeline {
   loading: boolean;
   /** Whether a page of newer messages is being fetched right now. */
   loadingAfter: boolean;
+  /**
+   * The last message this account had read when the room was opened.
+   *
+   * What the "new messages" line is drawn under. Fixed for as long as the room
+   * stays open, deliberately: reading the room moves the marker this came
+   * from, so a value that followed it would take the line away the moment
+   * somebody looked at what it was pointing out.
+   *
+   * Absent for a room this account has never read anywhere, and absent when
+   * the marker names something older than the loaded window. Both mean the
+   * same thing here: no line.
+   */
+  readUpTo?: string;
 }
 
 /**
@@ -1618,6 +1652,55 @@ export function onTyping(handler: (typing: Typing) => void): Promise<UnlistenFn>
  */
 export function timelineTyping(roomId: string, typing: boolean): Promise<void> {
   return invoke<void>("timeline_typing", { roomId, typing });
+}
+
+/**
+ * Say that everything up to and including a message has been read.
+ *
+ * Safe to call as often as a scroll does. Rust drops an ask naming the message
+ * it last sent, so a reader sitting still in a quiet room sends one receipt
+ * and then nothing.
+ *
+ * Never throws, and a receipt for a room nobody has open is quietly nothing:
+ * whether it goes out at all is a room change away, and there is nothing to
+ * say to somebody about a receipt that did not.
+ *
+ * Which receipt goes out is `privacySettings`. This does not carry it, because
+ * the answer belongs to the moment the receipt is sent rather than to the
+ * moment this component decided to send one.
+ */
+export function timelineMarkRead(eventId: string): Promise<void> {
+  return invoke<void>("timeline_mark_read", { eventId });
+}
+
+/** What this account tells other people about itself. */
+export interface PrivacySettings {
+  /**
+   * Whether a read receipt is the public one.
+   *
+   * True sends `m.read`, which everybody in the room can see and which cannot
+   * be taken back. False sends `m.read.private`, which resets the unread
+   * counts here and tells nobody.
+   *
+   * Neither changes the "new messages" line: the marker behind it is private
+   * in both directions.
+   */
+  publicReadReceipts: boolean;
+}
+
+/** What is currently chosen. */
+export function privacySettings(): Promise<PrivacySettings> {
+  return invoke<PrivacySettings>("privacy_settings");
+}
+
+/**
+ * Replace it.
+ *
+ * Nothing already sent is undone. A public receipt cannot be taken back, so
+ * turning this off stops the next one rather than retracting the last.
+ */
+export function setPrivacySettings(privacy: PrivacySettings): Promise<void> {
+  return invoke<void>("set_privacy_settings", { privacy });
 }
 
 /**
