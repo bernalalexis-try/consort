@@ -127,6 +127,13 @@ pub enum AppEvent {
     /// talking would push the whole conversation across the boundary on every
     /// keystroke either of them made.
     Typing(Typing),
+    /// A room somebody asked to be shown, from outside the webview.
+    ///
+    /// One thing sends this: a click on a desktop notification. It is not a
+    /// state channel and deliberately is not kept, because what it carries is
+    /// a press rather than a fact: replaying it on a reload would move
+    /// somebody to a room they were told about half an hour ago.
+    ShowRoom(String),
 }
 
 impl AppEvent {
@@ -158,6 +165,8 @@ impl AppEvent {
     pub const THREAD: &'static str = "thread";
     /// The channel carrying who is typing in the open room.
     pub const TYPING: &'static str = "typing";
+    /// The channel carrying a room a notification asked to be shown.
+    pub const SHOW_ROOM: &'static str = "show-room";
 
     /// The channel this event goes out on.
     pub fn channel(&self) -> &'static str {
@@ -176,6 +185,7 @@ impl AppEvent {
             Self::Timeline(_) => Self::TIMELINE,
             Self::Thread(_) => Self::THREAD,
             Self::Typing(_) => Self::TYPING,
+            Self::ShowRoom(_) => Self::SHOW_ROOM,
         }
     }
 
@@ -246,7 +256,12 @@ impl AppEvent {
             // and this only adds "the thing you just clicked". Replayed on a
             // reload it would put a complaint about a click from twenty
             // minutes ago in front of somebody who has since verified.
-            Self::Audio(_) | Self::Speaking(_) | Self::CallRefused(_) => false,
+            //
+            // A room a notification asked for goes the same way, and for the
+            // same reason: it is a press, not a state. Replaying it would move
+            // somebody to a room the moment their webview reloaded, on the
+            // strength of a notification they clicked half an hour ago.
+            Self::Audio(_) | Self::Speaking(_) | Self::CallRefused(_) | Self::ShowRoom(_) => false,
         }
     }
 
@@ -271,6 +286,7 @@ impl AppEvent {
             Self::Timeline(timeline) => serde_json::to_value(timeline),
             Self::Thread(thread) => serde_json::to_value(thread),
             Self::Typing(typing) => serde_json::to_value(typing),
+            Self::ShowRoom(room_id) => serde_json::to_value(room_id),
         }
     }
 }

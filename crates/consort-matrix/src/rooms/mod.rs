@@ -34,7 +34,7 @@
 mod avatar;
 mod direct;
 pub mod dto;
-mod facts;
+pub(crate) mod facts;
 mod hierarchy;
 mod link;
 pub mod profile;

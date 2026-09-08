@@ -1621,6 +1621,63 @@ export function timelineTyping(roomId: string, typing: boolean): Promise<void> {
 }
 
 /**
+ * A room a desktop notification was clicked to get to.
+ *
+ * Not a state channel and deliberately not replayed to a webview that
+ * reloaded: what it carries is a press rather than a fact, and replaying one
+ * would move somebody to a room they were told about half an hour ago.
+ *
+ * The window has already been raised by the time this arrives. Rust does that,
+ * because a webview cannot bring its own window forward.
+ */
+export function onShowRoom(
+  handler: (roomId: string) => void,
+): Promise<UnlistenFn> {
+  return listen<string>("show-room", (event) => handler(event.payload));
+}
+
+/** When to interrupt somebody, and how loudly. */
+export interface NotificationSettings {
+  /** Whether to draw notifications at all. */
+  enabled: boolean;
+  /**
+   * Whether to draw one only when somebody said your name.
+   *
+   * Off by default, so what arrives is whatever the account's push rules say.
+   * Those are the same rules every other Matrix client honours, so a room
+   * muted in Element is muted here. This is the local override for somebody in
+   * more rooms than push rules can sensibly be written for.
+   */
+  mentionsOnly: boolean;
+  /**
+   * Whether to ask the desktop for a sound when the push rules wanted one.
+   *
+   * Which messages want one is not decided here or in Consort: the default
+   * rules ask on a mention and in a direct message and stay quiet in a busy
+   * room.
+   */
+  sound: boolean;
+}
+
+/** What is currently chosen. */
+export function notificationSettings(): Promise<NotificationSettings> {
+  return invoke<NotificationSettings>("notification_settings");
+}
+
+/**
+ * Replace them.
+ *
+ * Nothing already drawn is taken back: an interruption has happened by the
+ * time anybody can change a setting about it, so these apply to the next
+ * message rather than retrospectively.
+ */
+export function setNotificationSettings(
+  notifications: NotificationSettings,
+): Promise<void> {
+  return invoke<void>("set_notification_settings", { notifications });
+}
+
+/**
  * Open the thread hanging from a message, or shut whichever is open.
  *
  * Answers nothing: what was asked for arrives on the `thread` channel. Asking

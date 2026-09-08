@@ -87,6 +87,23 @@ serde_json = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+# Desktop notifications, drawn from Rust like everything else privileged.
+#
+# Not `tauri-plugin-notification`, which is the obvious choice and was the
+# first one tried. Its desktop path builds exactly this crate's call and then
+# discards the handle it returns, and that handle is the only thing that can
+# say a notification was clicked. A notification you cannot click tells you
+# something happened and then makes you go and find it, which is the half of
+# the job worth having.
+#
+# Already in the graph either way: the plugin depends on this crate with the
+# same default features, so naming it directly costs nothing to build and
+# changes nothing about the zbus feature unification the dialog comment above
+# is careful about.
+#
+# What the plugin does that had to be copied is the Windows AppUserModelID.
+# See `src/notify.rs`.
+notify-rust = "4"
 
 [dev-dependencies]
 tempfile = "3"

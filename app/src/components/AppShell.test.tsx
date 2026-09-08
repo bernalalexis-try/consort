@@ -118,6 +118,7 @@ function shell({
   onSetAway = vi.fn(),
   callRefused = null,
   onDismissRefusal = vi.fn(),
+  showRoom = null,
 }: {
   rooms?: Rooms;
   call?: Call;
@@ -130,8 +131,9 @@ function shell({
   onSetAway?: ReturnType<typeof vi.fn>;
   callRefused?: CallRefused | null;
   onDismissRefusal?: ReturnType<typeof vi.fn>;
+  showRoom?: { roomId: string } | null;
 } = {}) {
-  const { container } = render(
+  const { container, rerender } = render(
     <AppShell
       profile={profile}
       rooms={rooms}
@@ -151,10 +153,11 @@ function shell({
       onSetAway={onSetAway}
       callRefused={callRefused}
       onDismissRefusal={onDismissRefusal}
+      showRoom={showRoom}
       onSignedOut={onSignedOut}
     />,
   );
-  return { container, onSignedOut, onJoinVoice, onLeaveVoice };
+  return { container, rerender, onSignedOut, onJoinVoice, onLeaveVoice };
 }
 
 describe("AppShell", () => {
@@ -177,6 +180,74 @@ describe("AppShell", () => {
     timelineSend.mockReset().mockResolvedValue(undefined);
     memberNames.mockReset().mockResolvedValue({});
     roomAt.mockReset().mockResolvedValue("!tech:example.org");
+  });
+
+  it("shows the room a notification was clicked to get to", async () => {
+    const rooms: Rooms = {
+      spaces: [
+        {
+          id: "home",
+          name: "Home",
+          avatar: null,
+          channels: [
+            textChannel("!general:example.org", "general"),
+            textChannel("!tech:example.org", "tech"),
+          ],
+        },
+      ],
+    };
+
+    shell({ rooms, showRoom: { roomId: "!tech:example.org" } });
+
+    expect(
+      await screen.findByRole("heading", { name: "#tech" }),
+    ).toBeInTheDocument();
+  });
+
+  it("waits for the rail to know about a room it was sent to", async () => {
+    // A notification about a room joined a moment ago can be clicked before
+    // the room list has caught up, and a press that did nothing would be a
+    // notification that lied about where it went.
+    const empty: Rooms = {
+      spaces: [{ id: "home", name: "Home", avatar: null, channels: [] }],
+    };
+    const arrived: Rooms = {
+      spaces: [
+        {
+          id: "home",
+          name: "Home",
+          avatar: null,
+          channels: [textChannel("!tech:example.org", "tech")],
+        },
+      ],
+    };
+    const asked = { roomId: "!tech:example.org" };
+
+    shell({ rooms: empty, showRoom: asked });
+    expect(screen.queryByRole("heading", { name: "#tech" })).toBeNull();
+
+    shell({ rooms: arrived, showRoom: asked });
+
+    expect(
+      await screen.findByRole("heading", { name: "#tech" }),
+    ).toBeInTheDocument();
+  });
+
+  it("shows nothing in particular when no notification has been clicked", async () => {
+    const rooms: Rooms = {
+      spaces: [
+        {
+          id: "home",
+          name: "Home",
+          avatar: null,
+          channels: [textChannel("!general:example.org", "general")],
+        },
+      ],
+    };
+
+    shell({ rooms });
+
+    expect(screen.queryByRole("heading", { name: "#general" })).toBeNull();
   });
 
   it("folds the channel list away, and back", async () => {

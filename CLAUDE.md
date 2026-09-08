@@ -8,9 +8,9 @@ Consort is a desktop Matrix chat client in Rust and Tauri, aimed at voice-first
 team chat. Today it does authentication, session verification (emoji and
 recovery key), room key backup, the room list, voice over MatrixRTC and
 LiveKit, reading and sending text in a room, attachments, threads, replies both
-sent and drawn, reactions, mentions, a typing indicator, and `matrix.to` links
-that go where they point. Sending an attachment and editing a message are not
-built.
+sent and drawn, reactions, mentions, a typing indicator, desktop notifications
+that honour the account's push rules, and `matrix.to` links that go where they
+point. Sending an attachment and editing a message are not built.
 
 ## Layout
 
