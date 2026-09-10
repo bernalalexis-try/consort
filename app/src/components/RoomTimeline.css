@@ -1207,6 +1207,16 @@
   gap: var(--space-2);
   align-items: end;
   padding: 0 var(--space-6) var(--space-4);
+  /*
+    One height for the row, worked out rather than measured: the box's own
+    line, plus the padding and the border it carries above and below. The
+    button before it and the button after it take the same number, so all
+    three tops agree while the box stays free to grow with what is typed.
+
+    `1lh` rather than a multiplier, so the number follows the type scale and
+    the line height wherever those go next.
+  */
+  --composer-control: calc(1lh + 2 * (var(--space-3) + 1px));
 }
 
 /*
@@ -1217,8 +1227,8 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 40px;
-  height: 40px;
+  width: var(--composer-control);
+  height: var(--composer-control);
   padding: 0;
   background: var(--surface-raised);
   border: 1px solid var(--line-subtle);
@@ -1277,6 +1287,12 @@
     than a broken one.
   */
   field-sizing: content;
+  /*
+    What one row already comes to. Pinned to the shared number rather than left
+    to arithmetic that happens to agree, since it is the height the buttons
+    beside it are taking.
+  */
+  min-height: var(--composer-control);
   max-height: 40vh;
   resize: none;
 }
@@ -1288,9 +1304,16 @@
 }
 
 .timeline__send {
+  min-height: var(--composer-control);
   padding: var(--space-3) var(--space-4);
   background: var(--violet);
-  border: none;
+  /*
+    Transparent rather than absent, so this spends the same pixel on a border
+    that the two bordered surfaces beside it do and the three boxes come to one
+    height. Drawn, it would read as a second affordance around a filled
+    control.
+  */
+  border: 1px solid transparent;
   border-radius: var(--radius-md);
   color: var(--text-primary);
   font: inherit;

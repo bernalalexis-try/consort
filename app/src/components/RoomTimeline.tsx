@@ -104,7 +104,15 @@ function PaperclipIcon({ className }: { className?: string }) {
   return (
     <svg
       className={className}
-      viewBox="0 0 24 24"
+      /*
+        Shifted, not square with the origin. The path's ink spans x 4.33..21.00
+        and y 4.03..22.07, so it sits centred on (12.66, 13.05) and drew half a
+        pixel right and most of one low. Moving the window rather than the
+        coordinates leaves the path as it came, and a scale is not an option
+        here: `stroke-width` scales with it, which would make this the one thin
+        icon in the application.
+      */
+      viewBox="0.66 1.05 24 24"
       fill="none"
       stroke="currentColor"
       strokeWidth="2"
