@@ -120,6 +120,41 @@ HTTP from the webview. Everything privileged goes through a Rust command. If a
 frontend change seems to need a new capability, that is a signal the logic
 belongs in Rust.
 
+### A paste carries no picture, so the clipboard is read in Rust
+
+`clipboardData.files` and `clipboardData.items` are both empty in WebKitGTK
+when what is on the clipboard is an image. A composer that waits for a `File`
+off a `paste` event waits forever, and it fails silently: the event fires, the
+handler runs, and there is simply nothing in it.
+
+Do not reach for `clipboardData` again. Ctrl+V is a `keydown` on the window,
+and `attachment_paste` reads the clipboard through
+`tauri-plugin-clipboard-manager`, where the picture is available and where
+nothing depends on what has focus. `attaching::Clipboard` is the trait that
+keeps the rule testable without a desktop.
+
+The rule itself: **text on the clipboard means there is no screenshot to
+stage.** A copy out of a spreadsheet carries both the words and a rendering of
+them, and staging the picture would lose what somebody meant to paste, so Rust
+reads text first and answers with nothing when it finds any. The keystroke is
+never `preventDefault`ed, which is what lets the words reach the box on their
+own. Reading text first is also what stops an ordinary paste pulling a
+full-screen RGBA buffer nobody asked for.
+
+Two things worth not rediscovering. The command is `async` so the read happens
+off the main thread: an X11 selection belongs to a process, and pasting a link
+copied out of Consort itself would otherwise have the window waiting on an
+answer only the window can give. And the picture never crosses the IPC. It is
+held in `AppState` and sent by asking for what is held, because a temp file has
+no honest owner to delete it and a plaintext screenshot left on disk by an
+end-to-end encrypted client is not a trade worth making.
+
+The bug behind all of this is WebKit 218519, five years of `Pasteboard::read()`
+not reading clipboard image buffers. It was fixed upstream in October 2025 and
+released in webkitgtk 2.51.1, but 2.52.6 still hands the page nothing here, so
+do not assume a version bump has made this section obsolete without pasting a
+screenshot into a dev build and watching it land.
+
 ### The IPC runs both ways now
 
 Commands are request and response; anything push-driven is an event.

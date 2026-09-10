@@ -963,6 +963,7 @@ dependencies = [
  "consort-audio",
  "consort-call",
  "consort-matrix",
+ "image",
  "matrix-sdk",
  "open",
  "serde",

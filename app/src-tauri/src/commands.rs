@@ -642,22 +642,67 @@ pub async fn timeline_attach_file_for(
     send_attachment_for(state, room_id, filename, bytes, caption, reply_to).await
 }
 
-/// Send an attachment the page read off a paste.
+/// Stage whatever picture is on the clipboard, if a picture is what is on it.
 ///
-/// The one path where the bytes start in the webview, because a `paste` event
-/// carries a `File` a page can read with no capability at all. They arrive
-/// base64 encoded; see `crate::attaching` for why that is the encoding.
-pub async fn timeline_attach_bytes_for(
+/// Words win. A copy out of a spreadsheet carries both a rendering and the
+/// text, and staging the picture would lose what somebody meant to paste, so
+/// text present at all means there is no screenshot here and the webview's own
+/// paste puts the words in the box. That order is also what keeps an ordinary
+/// paste from reading a full screen of pixels it has no use for.
+pub async fn paste_attachment_for(
+    state: &AppState,
+    clipboard: &dyn attaching::Clipboard,
+) -> Result<Option<attaching::Pasted>, CommandError> {
+    if clipboard.text().is_some_and(|text| !text.is_empty()) {
+        return Ok(None);
+    }
+
+    let Some(shot) = clipboard.image() else {
+        return Ok(None);
+    };
+
+    let png = attaching::png_of(&shot)?;
+    let size = png.len() as u64;
+    state.hold_pasted(png).await;
+
+    Ok(Some(attaching::Pasted {
+        name: attaching::PASTED_NAME.to_owned(),
+        size,
+    }))
+}
+
+/// Send the screenshot staged by the paste above.
+///
+/// The bytes are copied out rather than taken, and the slot is emptied only
+/// once the homeserver has them: a send that fails leaves the attachment in
+/// the composer, and pressing send again has to find it still there.
+pub async fn timeline_attach_pasted_for(
     state: &AppState,
     room_id: String,
-    filename: String,
-    data: String,
     caption: Option<String>,
     reply_to: Option<String>,
 ) -> Result<(), CommandError> {
-    let bytes = attaching::decode(&data)?;
+    let bytes = state.pasted().await.ok_or_else(|| {
+        // Reachable: the webview reloading loses the composer while this side
+        // keeps running, so the page can ask for something already let go of.
+        CommandError::new(
+            "Consort no longer has that screenshot. Paste it again.",
+            "sending a pasted screenshot with nothing held".to_owned(),
+        )
+    })?;
 
-    send_attachment_for(state, room_id, filename, bytes, caption, reply_to).await
+    send_attachment_for(
+        state,
+        room_id,
+        attaching::PASTED_NAME.to_owned(),
+        bytes,
+        caption,
+        reply_to,
+    )
+    .await?;
+
+    state.forget_pasted().await;
+    Ok(())
 }
 
 /// What devices this machine has, and which of them are in use.
@@ -1489,17 +1534,56 @@ pub async fn timeline_attach_file(
     timeline_attach_file_for(&state, room_id, path, caption, reply_to).await
 }
 
-/// See `timeline_attach_bytes_for`.
+/// This desktop's clipboard, as the two questions `attaching` asks of it.
+///
+/// The platform call is all this is, which is the same split
+/// `timeline_copy_link` makes against `timeline_permalink_for`: what a test
+/// cannot reach is the clipboard itself, and everything deciding what a paste
+/// means sits behind the trait.
+struct DesktopClipboard(tauri::AppHandle);
+
+impl attaching::Clipboard for DesktopClipboard {
+    fn text(&self) -> Option<String> {
+        use tauri_plugin_clipboard_manager::ClipboardExt;
+
+        self.0.clipboard().read_text().ok()
+    }
+
+    fn image(&self) -> Option<attaching::Screenshot> {
+        use tauri_plugin_clipboard_manager::ClipboardExt;
+
+        let picture = self.0.clipboard().read_image().ok()?;
+        Some(attaching::Screenshot {
+            rgba: picture.rgba().to_vec(),
+            width: picture.width(),
+            height: picture.height(),
+        })
+    }
+}
+
+/// See `paste_attachment_for`.
+///
+/// Async because the read must not happen on the main thread: an X11 selection
+/// belongs to a process, so asking for one Consort itself owns, which is what
+/// pasting a link copied out of this same window does, would have the window
+/// waiting on an answer only the window can give.
 #[tauri::command]
-pub async fn timeline_attach_bytes(
+pub async fn attachment_paste(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Option<attaching::Pasted>, CommandError> {
+    paste_attachment_for(&state, &DesktopClipboard(app)).await
+}
+
+/// See `timeline_attach_pasted_for`.
+#[tauri::command]
+pub async fn timeline_attach_pasted(
     state: State<'_, AppState>,
     room_id: String,
-    filename: String,
-    data: String,
     caption: Option<String>,
     reply_to: Option<String>,
 ) -> Result<(), CommandError> {
-    timeline_attach_bytes_for(&state, room_id, filename, data, caption, reply_to).await
+    timeline_attach_pasted_for(&state, room_id, caption, reply_to).await
 }
 
 /// The schemes a message may send somebody to.
@@ -4013,12 +4097,113 @@ mod against_a_mock_homeserver {
             .unwrap();
         }
 
-        #[tokio::test]
-        async fn a_pasted_screenshot_is_sent_from_the_bytes_the_page_read() {
-            // The one path where the bytes start in the webview, because a
-            // paste carries a `File` a page can read with no capability.
-            use base64::Engine;
+        /// A clipboard with whatever was put on it, counting picture reads.
+        ///
+        /// The count is the point of one test below: reading a full screen of
+        /// pixels for an ordinary paste of words costs tens of megabytes for
+        /// something nobody asked for.
+        struct FakeClipboard {
+            text: Option<String>,
+            picture: Option<attaching::Screenshot>,
+            pictures_read: std::sync::atomic::AtomicUsize,
+        }
 
+        impl FakeClipboard {
+            fn holding_text(text: &str) -> Self {
+                Self {
+                    text: Some(text.to_owned()),
+                    picture: None,
+                    pictures_read: std::sync::atomic::AtomicUsize::new(0),
+                }
+            }
+
+            fn holding_a_picture() -> Self {
+                Self {
+                    text: None,
+                    picture: Some(attaching::Screenshot {
+                        rgba: vec![255, 0, 0, 255],
+                        width: 1,
+                        height: 1,
+                    }),
+                    pictures_read: std::sync::atomic::AtomicUsize::new(0),
+                }
+            }
+
+            fn empty() -> Self {
+                Self {
+                    text: None,
+                    picture: None,
+                    pictures_read: std::sync::atomic::AtomicUsize::new(0),
+                }
+            }
+        }
+
+        impl attaching::Clipboard for FakeClipboard {
+            fn text(&self) -> Option<String> {
+                self.text.clone()
+            }
+
+            fn image(&self) -> Option<attaching::Screenshot> {
+                self.pictures_read
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                self.picture.as_ref().map(|shot| attaching::Screenshot {
+                    rgba: shot.rgba.clone(),
+                    width: shot.width,
+                    height: shot.height,
+                })
+            }
+        }
+
+        #[tokio::test]
+        async fn a_clipboard_with_words_on_it_stages_nothing_and_is_not_read_for_a_picture() {
+            // Both halves of the same rule. A copy out of a spreadsheet
+            // carries the words and a rendering of them, and staging the
+            // picture would lose what somebody meant to paste.
+            let (_dir, state, _sink) = state();
+            let clipboard = FakeClipboard::holding_text("a row of a spreadsheet");
+
+            let staged = paste_attachment_for(&state, &clipboard).await.unwrap();
+
+            assert!(staged.is_none());
+            assert_eq!(
+                clipboard
+                    .pictures_read
+                    .load(std::sync::atomic::Ordering::SeqCst),
+                0
+            );
+        }
+
+        #[tokio::test]
+        async fn a_clipboard_with_a_picture_on_it_stages_it_and_holds_the_bytes() {
+            let (_dir, state, _sink) = state();
+
+            let staged = paste_attachment_for(&state, &FakeClipboard::holding_a_picture())
+                .await
+                .unwrap()
+                .expect("a picture");
+
+            assert_eq!(staged.name, attaching::PASTED_NAME);
+            let held = state.pasted().await.expect("bytes held for the send");
+            assert_eq!(&held[..8], b"\x89PNG\r\n\x1a\n");
+            assert_eq!(staged.size, held.len() as u64);
+        }
+
+        #[tokio::test]
+        async fn a_clipboard_with_nothing_on_it_stages_nothing() {
+            let (_dir, state, _sink) = state();
+
+            assert!(
+                paste_attachment_for(&state, &FakeClipboard::empty())
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+        }
+
+        #[tokio::test]
+        async fn a_pasted_screenshot_is_sent_from_the_bytes_this_side_is_holding() {
+            // The picture never crossed to the page, so what the send names is
+            // the slot rather than anything the webview handed back.
             let server = MatrixMockServer::new().await;
             let (_dir, state, _sink) = ready(&server).await;
             server
@@ -4026,24 +4211,58 @@ mod against_a_mock_homeserver {
                 .expect_any_access_token()
                 .body_matches_partial_json(serde_json::json!({
                     "msgtype": "m.image",
-                    "filename": "pasted.png",
+                    "filename": attaching::PASTED_NAME,
                     "body": "look",
                 }))
                 .ok(ruma::event_id!("$sent:example.org"))
                 .expect(1)
                 .mount()
                 .await;
+            paste_attachment_for(&state, &FakeClipboard::holding_a_picture())
+                .await
+                .unwrap()
+                .expect("a picture");
 
-            timeline_attach_bytes_for(
-                &state,
-                ROOM.to_owned(),
-                "pasted.png".to_owned(),
-                base64::engine::general_purpose::STANDARD.encode(PNG),
-                Some("look".to_owned()),
-                None,
-            )
-            .await
-            .unwrap();
+            timeline_attach_pasted_for(&state, ROOM.to_owned(), Some("look".to_owned()), None)
+                .await
+                .unwrap();
+
+            assert!(
+                state.pasted().await.is_none(),
+                "a sent screenshot is let go of"
+            );
+        }
+
+        #[tokio::test]
+        async fn a_send_that_failed_leaves_the_screenshot_staged() {
+            // The composer still draws it, so pressing send again has to find
+            // it still here.
+            let server = MatrixMockServer::new().await;
+            let (_dir, state, _sink) = ready(&server).await;
+            paste_attachment_for(&state, &FakeClipboard::holding_a_picture())
+                .await
+                .unwrap()
+                .expect("a picture");
+
+            timeline_attach_pasted_for(&state, ROOM.to_owned(), None, None)
+                .await
+                .unwrap_err();
+
+            assert!(state.pasted().await.is_some());
+        }
+
+        #[tokio::test]
+        async fn sending_a_screenshot_that_is_no_longer_held_says_so() {
+            // Reachable: a webview reload loses the composer while this side
+            // keeps running.
+            let server = MatrixMockServer::new().await;
+            let (_dir, state, _sink) = ready(&server).await;
+
+            let refused = timeline_attach_pasted_for(&state, ROOM.to_owned(), None, None)
+                .await
+                .unwrap_err();
+
+            assert!(refused.message().contains("Paste it again"), "{refused:?}");
         }
 
         #[tokio::test]

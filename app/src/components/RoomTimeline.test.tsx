@@ -22,7 +22,8 @@ const onTyping = vi.hoisted(() => vi.fn());
 const onDropped = vi.hoisted(() => vi.fn());
 const pickAttachment = vi.hoisted(() => vi.fn());
 const attachFile = vi.hoisted(() => vi.fn());
-const attachBytes = vi.hoisted(() => vi.fn());
+const attachPasted = vi.hoisted(() => vi.fn());
+const pasteAttachment = vi.hoisted(() => vi.fn());
 const timelineTyping = vi.hoisted(() => vi.fn());
 const timelineSend = vi.hoisted(() => vi.fn());
 const timelineReply = vi.hoisted(() => vi.fn());
@@ -55,7 +56,8 @@ vi.mock("../lib/api", async (importOriginal) => ({
   onDropped,
   pickAttachment,
   attachFile,
-  attachBytes,
+  attachPasted,
+  pasteAttachment,
   timelineTyping,
   timelineSend,
   timelineReply,
@@ -162,7 +164,8 @@ beforeEach(() => {
     );
   pickAttachment.mockReset().mockResolvedValue(null);
   attachFile.mockReset().mockResolvedValue(undefined);
-  attachBytes.mockReset().mockResolvedValue(undefined);
+  attachPasted.mockReset().mockResolvedValue(undefined);
+  pasteAttachment.mockReset().mockResolvedValue(null);
   timelineTyping.mockReset().mockResolvedValue(undefined);
   onTyping.mockReset().mockImplementation((handler: (t: Typing) => void) => {
     publishTyping = handler;
@@ -1021,17 +1024,13 @@ describe("sending an attachment", () => {
     size: 2048,
   };
 
-  /** The bytes of a file, as a paste event carries them. */
-  function pastedFile(name: string, contents = "png") {
-    return new File([contents], name, { type: "image/png" });
-  }
+  /** A screenshot on the clipboard, as Rust reports one. */
+  const SHOT = { name: "pasted-image.png", size: 4096 };
 
-  /** Paste `files` into the composer, as a screenshot arrives. */
-  async function paste(files: File[]) {
+  /** Press Ctrl+V, wherever the focus happens to be. */
+  async function paste() {
     await act(async () => {
-      fireEvent.paste(screen.getByRole("textbox"), {
-        clipboardData: { files, getData: () => "" },
-      });
+      fireEvent.keyDown(window, { key: "v", ctrlKey: true });
     });
   }
 
@@ -1236,46 +1235,77 @@ describe("sending an attachment", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("was not one");
   });
 
-  it("sends a pasted screenshot as bytes rather than as a path", async () => {
-    // The one path whose bytes start in the page, because a paste carries a
-    // `File` this side may read with no capability at all.
+  it("sends a pasted screenshot by asking for the one Rust is holding", async () => {
+    // Nothing about the picture is on this side. What the composer draws is a
+    // name and a length, exactly as it does for a file it never opened.
+    pasteAttachment.mockResolvedValue(SHOT);
     await pane();
-    await paste([pastedFile("screenshot.png")]);
 
-    expect(screen.getByText("screenshot.png")).toBeVisible();
+    await paste();
+
+    expect(screen.getByText("pasted-image.png")).toBeVisible();
     await userEvent.click(screen.getByRole("button", { name: "Send" }));
 
-    await waitFor(() => expect(attachBytes).toHaveBeenCalled());
-    const [roomId, filename, data, caption, replyTo] = attachBytes.mock
-      .calls[0] as [string, string, string, string | null, string | null];
-    expect(roomId).toBe(GENERAL);
-    expect(filename).toBe("screenshot.png");
-    expect(atob(data)).toBe("png");
-    expect(caption).toBeNull();
-    expect(replyTo).toBeNull();
+    await waitFor(() =>
+      expect(attachPasted).toHaveBeenCalledWith(GENERAL, null, null),
+    );
     expect(attachFile).not.toHaveBeenCalled();
   });
 
-  it("names a pasted screenshot that arrived without a name", async () => {
-    // Some desktops hand over a nameless blob, and an attachment with no name
-    // is a card labelled with nothing.
+  it("stages a screenshot with the composer unfocused", async () => {
+    // The keystroke is watched on the window rather than on the box, because
+    // the clipboard is read in Rust and none of it needs focus.
+    pasteAttachment.mockResolvedValue(SHOT);
     await pane();
+    (document.activeElement as HTMLElement | null)?.blur();
 
-    await paste([pastedFile("")]);
+    await paste();
 
     expect(screen.getByText("pasted-image.png")).toBeVisible();
   });
 
-  it("leaves a paste with no file in it alone", async () => {
-    // Text copied out of a spreadsheet arrives as both, and swallowing the
-    // event would lose the words somebody meant to paste.
+  it("stages nothing when the clipboard held words", async () => {
+    // Text copied out of a spreadsheet arrives as words and a rendering of
+    // them, and staging the picture would lose what somebody meant to paste.
+    // Rust answers with nothing, and the keystroke is never prevented, so the
+    // words go on reaching the box.
+    pasteAttachment.mockResolvedValue(null);
     await pane();
 
-    await paste([]);
+    await paste();
 
     expect(
       screen.queryByRole("button", { name: /Do not send/ }),
     ).not.toBeInTheDocument();
+  });
+
+  it("leaves a paste aimed at another box to that box", async () => {
+    // The thread panel has a composer of its own. Without this, pasting a
+    // screenshot into a thread would stage it in the channel behind it.
+    pasteAttachment.mockResolvedValue(SHOT);
+    await pane();
+    const elsewhere = document.createElement("textarea");
+    document.body.append(elsewhere);
+    elsewhere.focus();
+
+    await paste();
+
+    expect(pasteAttachment).not.toHaveBeenCalled();
+    elsewhere.remove();
+  });
+
+  it("says so rather than staging a screenshot it could not read", async () => {
+    pasteAttachment.mockRejectedValue({
+      message: "no clipboard here",
+      detail: "no clipboard here",
+    });
+    await pane();
+
+    await paste();
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "no clipboard here",
+    );
   });
 });
 

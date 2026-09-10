@@ -137,6 +137,13 @@ pub struct AppState {
     /// any command, so the protocol handler reaches it the same way a command
     /// reaches everything else: through the managed state.
     media: Mutex<crate::media::Cache>,
+    /// The screenshot waiting in the composer, if somebody pasted one.
+    ///
+    /// Held rather than handed to the page, which would cost the bytes a
+    /// crossing there and a crossing back for something the page does nothing
+    /// with. One slot because the composer stages one attachment at a time, so
+    /// a second paste is the answer to the first having been abandoned.
+    pasted: Mutex<Option<Vec<u8>>>,
     store: SessionStore,
     /// Held for the duration of a login or a logout.
     ///
@@ -319,6 +326,7 @@ impl AppState {
         Self {
             client: RwLock::new(None),
             media: Mutex::new(crate::media::Cache::new()),
+            pasted: Mutex::new(None),
             store,
             auth_gate: Mutex::new(()),
             refresh_task: Mutex::new(None),
@@ -785,6 +793,25 @@ impl AppState {
         &self.media
     }
 
+    /// Keep a pasted screenshot until it is sent or replaced.
+    pub async fn hold_pasted(&self, bytes: Vec<u8>) {
+        *self.pasted.lock().await = Some(bytes);
+    }
+
+    /// The screenshot waiting to be sent, if there is one.
+    ///
+    /// A copy rather than the slot emptied, because a send that fails leaves
+    /// the attachment staged on purpose: the composer still draws it, and
+    /// pressing send again has to have something to send.
+    pub async fn pasted(&self) -> Option<Vec<u8>> {
+        self.pasted.lock().await.clone()
+    }
+
+    /// Let go of the screenshot, once it has been sent.
+    pub async fn forget_pasted(&self) {
+        *self.pasted.lock().await = None;
+    }
+
     /// Adopt a signed-in client, and start the background work that goes with
     /// one: persisting token rotations, and syncing.
     ///
@@ -931,6 +958,10 @@ impl AppState {
         // is the previous account's conversation, in full, sitting on a
         // retained channel waiting for the next webview to ask.
         self.close_room();
+
+        // And so does a screenshot somebody pasted and never sent, which is a
+        // picture of the previous account's screen.
+        self.forget_pasted().await;
 
         // Aborting the sync task means it never runs its own final report, so
         // the last thing the frontend heard was whatever the loop was doing
@@ -1229,6 +1260,17 @@ mod tests {
         let (_dir, state, _sink) = state();
         state.clear_client().await;
         assert!(!state.has_refresh_task().await);
+    }
+
+    #[tokio::test]
+    async fn signing_out_lets_go_of_a_screenshot_that_was_never_sent() {
+        // What it retains is a picture of the previous account's screen.
+        let (_dir, state, _sink) = state();
+        state.hold_pasted(b"\x89PNG\r\n\x1a\n".to_vec()).await;
+
+        state.clear_client().await;
+
+        assert!(state.pasted().await.is_none());
     }
 
     #[tokio::test]

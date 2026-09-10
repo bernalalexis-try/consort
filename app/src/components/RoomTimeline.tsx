@@ -12,14 +12,14 @@ import { channelLabel, typingLabel } from "../lib/labels";
 import { useRoomLinks } from "../lib/roomLinks";
 import {
   asCommandError,
-  attachBytes,
   attachFile,
-  encodeAttachment,
+  attachPasted,
   memberNames,
   onDropped,
   onThread,
   onTimeline,
   onTyping,
+  pasteAttachment,
   pickAttachment,
   resendState,
   timelineClose,
@@ -129,17 +129,16 @@ function PaperclipIcon({ className }: { className?: string }) {
  * The one attachment waiting in the composer, and where its bytes are.
  *
  * Two shapes because there are two answers to that. A file somebody picked or
- * dropped is a path Rust will read at the moment they press send, so nothing
- * is held on either side in the meantime. A paste is a `File` the page already
- * has, because a `paste` event carries one and reading it needs no capability
- * at all; that one is held here, which is what a screenshot costs.
+ * dropped is a path Rust will read at the moment they press send. A screenshot
+ * off the clipboard has no path, so Rust holds the picture itself and there is
+ * nothing here to address it by. Neither one puts bytes in the page.
  *
  * One at a time. More would change the picker, this line, and what a failure
  * halfway through a send means, all at once.
  */
 type Staged =
   | { kind: "file"; name: string; size: number; path: string }
-  | { kind: "pasted"; name: string; size: number; bytes: File };
+  | { kind: "pasted"; name: string; size: number };
 
 /** What a staged attachment weighs, in words rather than in bytes. */
 function weigh(bytes: number): string {
@@ -382,6 +381,43 @@ export function RoomTimeline({
       });
     };
   }, []);
+
+  /*
+    Ctrl+V, on the window rather than on the box. The picture is read in Rust,
+    so nothing about this needs the composer to have focus, and WebKitGTK hands
+    a `paste` event no image to read anyway.
+
+    The keystroke is never prevented. A clipboard with words on it stages
+    nothing, and those words have to go on reaching whatever is focused exactly
+    as they did before.
+  */
+  useEffect(() => {
+    function onKey(event: KeyboardEvent) {
+      if (!(event.ctrlKey || event.metaKey) || event.key !== "v") return;
+      // Held down, which would ask Rust for the same screenshot as fast as the
+      // key repeats.
+      if (event.repeat) return;
+      // While a send is in flight, for the reason the picker's button is
+      // disabled then: what is staged is what is being sent, and replacing it
+      // halfway would send the wrong picture.
+      if (sending) return;
+      // Somebody else's box: the thread panel's, or a settings field. A paste
+      // aimed at one of those is not this room's, and staging it here would
+      // put a screenshot in the channel behind what they are typing into.
+      const focused = document.activeElement;
+      if (
+        focused !== draftBox.current &&
+        focused instanceof HTMLElement &&
+        focused.matches("input, textarea")
+      ) {
+        return;
+      }
+      paste();
+    }
+
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [sending]);
 
   /*
     Whatever was waiting to be sent belongs to the room it was staged in. A
@@ -724,31 +760,21 @@ export function RoomTimeline({
       });
   }
 
-  /**
-   * Put a pasted file in the composer, and say whether there was one.
-   *
-   * The answer is what decides whether the paste still reaches the box. A
-   * screenshot has no text in it and swallowing the event costs nothing; text
-   * copied out of a spreadsheet arrives as both, and stopping it there would
-   * lose the words somebody meant to paste.
-   */
-  function pasted(files: FileList): boolean {
-    const file: File | undefined = files[0];
-    if (file === undefined) return false;
-
-    setProblem(
-      files.length > 1 ? "Consort sends one attachment at a time." : null,
-    );
-    setStaged({
-      kind: "pasted",
-      // A screenshot off the clipboard has no name of its own on some
-      // desktops, and an attachment with no name is a card labelled with
-      // nothing.
-      name: file.name === "" ? "pasted-image.png" : file.name,
-      size: file.size,
-      bytes: file,
-    });
-    return true;
+  /** Put whatever picture is on the clipboard in the composer. */
+  function paste() {
+    void pasteAttachment()
+      .then((shot) => {
+        // Null is a clipboard with no picture on it, which is every ordinary
+        // paste of words. Rust says so precisely so that the keystroke goes on
+        // to put them in the box.
+        if (shot === null) return;
+        setProblem(null);
+        setStaged({ kind: "pasted", name: shot.name, size: shot.size });
+        draftBox.current?.focus();
+      })
+      .catch((raw: unknown) => {
+        setProblem(asCommandError(raw).message);
+      });
   }
 
   /** Send whatever is staged, with the box as its caption. */
@@ -763,14 +789,7 @@ export function RoomTimeline({
       return;
     }
 
-    const bytes = new Uint8Array(await attachment.bytes.arrayBuffer());
-    await attachBytes(
-      channel.id,
-      attachment.name,
-      encodeAttachment(bytes),
-      caption,
-      replyTo,
-    );
+    await attachPasted(channel.id, caption, replyTo);
   }
 
   async function send() {
@@ -1056,12 +1075,6 @@ export function RoomTimeline({
           onChange={(event) => {
             setDraft(event.target.value);
             report(event.target.value);
-          }}
-          onPaste={(event) => {
-            // The path people use most, and the only one whose bytes start in
-            // the page: a `paste` carries a `File` this side may read with no
-            // capability at all.
-            if (pasted(event.clipboardData.files)) event.preventDefault();
           }}
           onKeyDown={(event) => {
             /*

@@ -8,10 +8,10 @@ vi.mock("@tauri-apps/api/event", () => ({ listen }));
 
 import {
   asCommandError,
-  attachBytes,
+  attachPasted,
   attachFile,
   audioDevices,
-  encodeAttachment,
+  pasteAttachment,
   onDropped,
   pickAttachment,
   mediaUrl,
@@ -399,34 +399,33 @@ describe("attachments", () => {
     });
   });
 
-  it("sends a pasted attachment as bytes rather than as a path", async () => {
-    await attachBytes("!general:example.org", "pasted.png", "cG5n", null, null);
+  it("asks Rust what is on the clipboard rather than reading it here", async () => {
+    invoke.mockResolvedValue({ name: "pasted-image.png", size: 4096 });
 
-    expect(invoke).toHaveBeenCalledWith("timeline_attach_bytes", {
+    const shot = await pasteAttachment();
+
+    expect(invoke).toHaveBeenCalledWith("attachment_paste");
+    expect(shot).toEqual({ name: "pasted-image.png", size: 4096 });
+  });
+
+  it("says there was nothing to stage when the clipboard held words", async () => {
+    // Which is how the keystroke goes on to put them in the box: Rust answers
+    // with nothing rather than staging a rendering of the text.
+    invoke.mockResolvedValue(null);
+
+    expect(await pasteAttachment()).toBeNull();
+  });
+
+  it("sends a pasted screenshot by asking for the one Rust is holding", async () => {
+    // No bytes and no name. The picture never crossed to this side, so there
+    // is nothing here to send but the instruction to send it.
+    await attachPasted("!general:example.org", "look", "$said:example.org");
+
+    expect(invoke).toHaveBeenCalledWith("timeline_attach_pasted", {
       roomId: "!general:example.org",
-      filename: "pasted.png",
-      data: "cG5n",
-      caption: null,
-      replyTo: null,
+      caption: "look",
+      replyTo: "$said:example.org",
     });
-  });
-
-  it("encodes what a paste carried so it survives the boundary", () => {
-    // The other half of `crate::attaching::decode`. Bytes above 127 are the
-    // point: every real picture has them, and an encoding that mangled them
-    // would produce a file nobody can open.
-    const bytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-
-    expect(encodeAttachment(bytes)).toBe("iVBORw0KGgo=");
-  });
-
-  it("encodes a screenshot-sized paste without overflowing the stack", () => {
-    // Spreading a few hundred thousand arguments into `fromCharCode` throws,
-    // and the size at which it starts to is a browser's business rather than
-    // something to find out in front of a user.
-    const bytes = new Uint8Array(400_000).fill(0xff);
-
-    expect(atob(encodeAttachment(bytes))).toHaveLength(400_000);
   });
 });
 

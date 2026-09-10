@@ -1750,50 +1750,42 @@ export function attachFile(
   });
 }
 
-/**
- * Send an attachment this page read off a paste.
- *
- * The one path whose bytes start in the webview, because a `paste` event
- * carries a `File` a page may read with no capability at all, and it is the
- * one people use most: it is how a screenshot is sent.
- *
- * The bytes go as base64. It is a third larger than what it holds, and it is
- * what carries them beside the room and the caption: Tauri sends a buffer
- * raw only when the whole argument payload is one, which leaves nowhere to
- * put the other three, and a `Uint8Array` inside an object is serialised as
- * an object with one key per byte.
- */
-export function attachBytes(
-  roomId: string,
-  filename: string,
-  data: string,
-  caption: string | null,
-  replyTo: string | null,
-): Promise<void> {
-  return invoke<void>("timeline_attach_bytes", {
-    roomId,
-    filename,
-    data,
-    caption,
-    replyTo,
-  });
+/** A screenshot off the clipboard, waiting in the composer. */
+export interface Pasted {
+  /** What the room will call it, since a screenshot arrives without a name. */
+  name: string;
+  /** How many bytes the encoded picture is, for saying what is about to go. */
+  size: number;
 }
 
 /**
- * What a page read off a paste, as something to hand to `attachBytes`.
+ * Stage whatever picture is on the clipboard, and say whether there was one.
  *
- * Chunked rather than one `String.fromCharCode(...bytes)`, which throws on a
- * screenshot: spreading a few hundred thousand arguments overflows the call
- * stack, and the size at which it starts to is a browser's business rather
- * than something to find out in front of a user.
+ * Resolves to `null` when there is no picture to stage, which includes every
+ * ordinary paste of words: text on the clipboard means the paste belongs in
+ * the message box, and Rust answers with nothing so that it lands there.
+ *
+ * A command rather than a `paste` handler, and not for the usual capability
+ * reason alone. WebKitGTK hands the page no image at all, so a composer
+ * waiting on `clipboardData` waits forever, and reading the clipboard where
+ * the rest of this application already reads it works whatever has focus.
  */
-export function encodeAttachment(bytes: Uint8Array): string {
-  const CHUNK = 0x8000;
-  let binary = "";
-  for (let at = 0; at < bytes.length; at += CHUNK) {
-    binary += String.fromCharCode(...bytes.subarray(at, at + CHUNK));
-  }
-  return btoa(binary);
+export function pasteAttachment(): Promise<Pasted | null> {
+  return invoke<Pasted | null>("attachment_paste");
+}
+
+/**
+ * Send the screenshot `pasteAttachment` staged.
+ *
+ * No bytes and no name: Rust is holding the picture, and this says to send
+ * what it is holding, the way a picked file is sent by its path.
+ */
+export function attachPasted(
+  roomId: string,
+  caption: string | null,
+  replyTo: string | null,
+): Promise<void> {
+  return invoke<void>("timeline_attach_pasted", { roomId, caption, replyTo });
 }
 
 /**

@@ -13,25 +13,27 @@
 //! sent, and no bytes at all. They are read once, at the moment somebody
 //! presses send.
 //!
-//! Pasting is the odd one. A `paste` event carries a `File` the page can read
-//! with no capability whatsoever, so those bytes start in the webview and have
-//! to come the other way. They arrive base64 encoded, which is a third again
-//! in size and is the price of the only encoding the IPC boundary carries
-//! without turning a byte array into a JSON object with one key per byte. It
-//! is also the path people use most, because it is how a screenshot is sent.
+//! A paste ends in bytes rather than a path, because a screenshot on the
+//! clipboard is not a file anywhere. Those bytes are read here too, off the
+//! desktop's own clipboard, rather than in the page: WebKitGTK hands a
+//! `paste` event no image at all, so a composer that waited for one waited
+//! forever. What crosses is [`Pasted`], a name and a length on the same terms
+//! as [`Chosen`], and the picture stays on this side until it is sent.
 //!
 //! [`MAX_BYTES`] bounds all three. On the path side it is checked against the
 //! file's length before the read rather than after it, which is the difference
 //! between refusing a four-gigabyte file and running out of memory reading one.
 
+use std::io::Cursor;
 use std::path::{Path, PathBuf};
 
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD;
 use consort_matrix::timeline::MAX_BYTES;
 use serde::Serialize;
 
 use crate::commands::CommandError;
+
+/// What the room will call a screenshot, which arrives with no name of its own.
+pub const PASTED_NAME: &str = "pasted-image.png";
 
 /// A file somebody chose, before anything has been read of it.
 ///
@@ -91,24 +93,73 @@ pub fn read(path: &str) -> Result<Vec<u8>, CommandError> {
     std::fs::read(&path).map_err(|error| unreadable(&path, &error))
 }
 
-/// The bytes the page read off a paste, back out of the encoding they crossed
-/// in.
+/// A screenshot waiting in the composer, before it is sent.
 ///
-/// The length is checked against the encoded string first, which is a third
-/// larger than what it holds and so refuses a little early. That is the
-/// conservative direction and it costs nothing real: the ceiling is half a
-/// gigabyte and nobody pastes one.
-pub fn decode(encoded: &str) -> Result<Vec<u8>, CommandError> {
-    within_the_ceiling(encoded.len() as u64)?;
+/// The counterpart of [`Chosen`] for something with no path, and carrying no
+/// more than it does: the bytes are held in `AppState` and addressed rather
+/// than handed over, which is the same arrangement a verification flow uses
+/// and for the same reason.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Pasted {
+    pub name: String,
+    pub size: u64,
+}
 
-    STANDARD.decode(encoded).map_err(|error| {
-        // Only reachable from a page that built the string some other way,
-        // which is this build's own code and nothing else.
-        CommandError::new(
-            "Consort could not read what was pasted.",
-            format!("decoding a pasted attachment: {error}"),
-        )
-    })
+/// A picture off the clipboard, in the shape every platform hands it over in.
+pub struct Screenshot {
+    pub rgba: Vec<u8>,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// The desktop's clipboard, as the two questions asked of it.
+///
+/// A trait so the rule about what a paste means is testable without one, the
+/// way [`crate::secrets::Backend`] makes the keyring testable. `image` is
+/// separate from `text` and not a field beside it because reading a
+/// full-screen picture costs tens of megabytes, and an ordinary paste of words
+/// must never pay that.
+/// `Send + Sync` because a Tauri command's future crosses threads and this is
+/// borrowed across the await that stores what was read.
+pub trait Clipboard: Send + Sync {
+    fn text(&self) -> Option<String>;
+    fn image(&self) -> Option<Screenshot>;
+}
+
+/// A clipboard picture as the PNG that will be sent.
+///
+/// Every platform hands over raw pixels rather than a file format, so
+/// something has to encode them, and PNG is what a screenshot is expected to
+/// arrive as.
+pub fn png_of(shot: &Screenshot) -> Result<Vec<u8>, CommandError> {
+    let picture = image::RgbaImage::from_raw(shot.width, shot.height, shot.rgba.clone())
+        .ok_or_else(|| {
+            // Not unreachable: the dimensions and the buffer both come from
+            // whatever owns the clipboard, which is another application.
+            CommandError::new(
+                "Consort could not read what was on the clipboard.",
+                format!(
+                    "{} bytes is not {}x{} pixels",
+                    shot.rgba.len(),
+                    shot.width,
+                    shot.height
+                ),
+            )
+        })?;
+
+    let mut png = Vec::new();
+    picture
+        .write_to(&mut Cursor::new(&mut png), image::ImageFormat::Png)
+        .map_err(|error| {
+            CommandError::new(
+                "Consort could not read what was on the clipboard.",
+                format!("encoding a pasted screenshot: {error}"),
+            )
+        })?;
+
+    within_the_ceiling(png.len() as u64)?;
+    Ok(png)
 }
 
 /// Whether this many bytes is more than this build will hold at once.
@@ -212,16 +263,38 @@ mod tests {
     }
 
     #[test]
-    fn what_the_page_pasted_comes_back_as_the_bytes_it_read() {
-        let encoded = STANDARD.encode(b"\x89PNG\r\n\x1a\n");
+    fn a_clipboard_picture_encodes_to_a_png_of_the_same_pixels() {
+        let shot = Screenshot {
+            rgba: vec![
+                255, 0, 0, 255, // red
+                0, 255, 0, 255, // green
+                0, 0, 255, 255, // blue
+                255, 255, 255, 255, // white
+            ],
+            width: 2,
+            height: 2,
+        };
 
-        assert_eq!(decode(&encoded).unwrap(), b"\x89PNG\r\n\x1a\n");
+        let png = png_of(&shot).expect("four pixels");
+
+        assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+        let read_back = image::load_from_memory(&png).unwrap().to_rgba8();
+        assert_eq!(read_back.dimensions(), (2, 2));
+        assert_eq!(read_back.into_raw(), shot.rgba);
     }
 
     #[test]
-    fn something_that_is_not_the_encoding_is_reported_rather_than_a_panic() {
-        let error = decode("not base64 at all!").unwrap_err();
+    fn a_clipboard_picture_that_is_not_its_own_dimensions_is_reported_rather_than_a_panic() {
+        // What is on the clipboard belongs to another application, so the two
+        // disagreeing is that application's bug arriving here rather than ours.
+        let shot = Screenshot {
+            rgba: vec![255, 0, 0, 255],
+            width: 64,
+            height: 64,
+        };
 
-        assert!(!error.message().is_empty());
+        let error = png_of(&shot).unwrap_err();
+
+        assert!(error.message().contains("clipboard"), "{error:?}");
     }
 }
