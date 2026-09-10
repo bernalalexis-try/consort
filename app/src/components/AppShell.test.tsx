@@ -1,6 +1,6 @@
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 
 const audioDevices = vi.hoisted(() => vi.fn());
 const audioSettings = vi.hoisted(() => vi.fn());
@@ -124,14 +124,14 @@ function shell({
   rooms?: Rooms;
   call?: Call;
   selfAudio?: SelfAudio;
-  onSignedOut?: ReturnType<typeof vi.fn>;
-  onJoinVoice?: ReturnType<typeof vi.fn>;
-  onLeaveVoice?: ReturnType<typeof vi.fn>;
-  onSetMuted?: ReturnType<typeof vi.fn>;
-  onSetDeafened?: ReturnType<typeof vi.fn>;
-  onSetAway?: ReturnType<typeof vi.fn>;
+  onSignedOut?: Mock<() => void>;
+  onJoinVoice?: Mock<(roomId: string) => void>;
+  onLeaveVoice?: Mock<() => void>;
+  onSetMuted?: Mock<(muted: boolean) => void>;
+  onSetDeafened?: Mock<(deafened: boolean) => void>;
+  onSetAway?: Mock<(away: boolean) => void>;
   callRefused?: CallRefused | null;
-  onDismissRefusal?: ReturnType<typeof vi.fn>;
+  onDismissRefusal?: Mock<() => void>;
 } = {}) {
   const { container } = render(
     <AppShell

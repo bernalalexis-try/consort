@@ -19,8 +19,10 @@ import {
   callConnect,
   callDisconnect,
   callRoomId,
+  callSetAway,
   callSetDeafened,
   callSetMuted,
+  onCallReadiness,
   onCall,
   onSelfAudio,
   HEARING,
@@ -29,6 +31,9 @@ import {
   audioTestStop,
   audioTonePlay,
   audioToneStop,
+  audioMonitorStart,
+  audioMonitorStop,
+  setPersonVolume,
   login,
   logout,
   onConnection,
@@ -43,6 +48,17 @@ import {
   threadSend,
   openLink,
   roomAt,
+  directRoom,
+  memberNames,
+  onTimeline,
+  timelineOpen,
+  timelineClose,
+  timelineEarlier,
+  timelineLater,
+  timelinePresent,
+  timelineSend,
+  saveAttachment,
+  NO_TIMELINE,
   timelineCopyLink,
   timelineGoTo,
   timelineReact,
@@ -59,6 +75,7 @@ import {
   type Call,
   type SelfAudio,
   type AudioSettings,
+  type CallReadiness,
   type Connection,
   type KeyBackup,
   type Profile,
@@ -425,6 +442,117 @@ describe("attachments", () => {
       roomId: "!general:example.org",
       caption: "look",
       replyTo: "$said:example.org",
+    });
+  });
+});
+
+describe("the timeline commands", () => {
+  const GENERAL = "!general:example.org";
+
+  beforeEach(() => {
+    invoke.mockReset().mockResolvedValue(undefined);
+    listen.mockReset().mockResolvedValue(() => {});
+  });
+
+  it("subscribes to the channel a room's messages arrive on", async () => {
+    // The name is a contract with `AppEvent::TIMELINE`. A typo here is a pane
+    // that stays empty rather than anything that fails.
+    await onTimeline(vi.fn());
+
+    expect(listen).toHaveBeenCalledWith("timeline", expect.any(Function));
+  });
+
+  it("hands the timeline handler the payload rather than the envelope", async () => {
+    const handler = vi.fn();
+    await onTimeline(handler);
+    const [, forward] = listen.mock.calls[0] as [
+      string,
+      (event: { payload: unknown }) => void,
+    ];
+    const timeline = { ...NO_TIMELINE, roomId: GENERAL };
+
+    forward({ payload: timeline });
+
+    expect(handler).toHaveBeenCalledWith(timeline);
+  });
+
+  it("opens a room under the name the Rust command expects", async () => {
+    await timelineOpen(GENERAL);
+
+    expect(invoke).toHaveBeenCalledWith("timeline_open", { roomId: GENERAL });
+  });
+
+  it("closes whatever room was open with no arguments", async () => {
+    // Nothing is named because nothing has to be: exactly one room is open.
+    await timelineClose();
+
+    expect(invoke).toHaveBeenCalledWith("timeline_close");
+  });
+
+  it("asks for a page of older messages with no arguments", async () => {
+    await timelineEarlier();
+
+    expect(invoke).toHaveBeenCalledWith("timeline_earlier");
+  });
+
+  it("asks for a page of newer messages with no arguments", async () => {
+    await timelineLater();
+
+    expect(invoke).toHaveBeenCalledWith("timeline_later");
+  });
+
+  it("goes back to the live end with no arguments", async () => {
+    await timelinePresent();
+
+    expect(invoke).toHaveBeenCalledWith("timeline_present");
+  });
+
+  it("sends what was typed under the names the Rust command expects", async () => {
+    await timelineSend(GENERAL, "morning");
+
+    expect(invoke).toHaveBeenCalledWith("timeline_send", {
+      roomId: GENERAL,
+      body: "morning",
+    });
+  });
+
+  it("saves an attachment by its handle and answers where it landed", async () => {
+    invoke.mockResolvedValue("/home/ada/Downloads/cat.png");
+
+    await expect(saveAttachment("{\"url\":\"mxc://example.org/abc\"}", "cat.png"))
+      .resolves.toBe("/home/ada/Downloads/cat.png");
+    expect(invoke).toHaveBeenCalledWith("timeline_media_save", {
+      source: "{\"url\":\"mxc://example.org/abc\"}",
+      name: "cat.png",
+    });
+  });
+
+  it("answers null when the save was cancelled rather than throwing", async () => {
+    // Dismissing the file dialog is not a failure, and treating it as one
+    // would put an error in front of somebody who chose not to save.
+    invoke.mockResolvedValue(null);
+
+    await expect(saveAttachment("{}", "cat.png")).resolves.toBeNull();
+  });
+
+  it("asks for member names under the names the Rust command expects", async () => {
+    invoke.mockResolvedValue({ "@bob:example.org": "Bob" });
+
+    await expect(memberNames(GENERAL, ["@bob:example.org"])).resolves.toEqual({
+      "@bob:example.org": "Bob",
+    });
+    expect(invoke).toHaveBeenCalledWith("member_names", {
+      roomId: GENERAL,
+      userIds: ["@bob:example.org"],
+    });
+  });
+
+  it("asks for the direct room with a person and answers which one it is", async () => {
+    invoke.mockResolvedValue("!dm:example.org");
+
+    await expect(directRoom("@bob:example.org")).resolves.toBe("!dm:example.org");
+    expect(invoke).toHaveBeenCalledWith("direct_room", {
+      userId: "@bob:example.org",
     });
   });
 });
@@ -810,6 +938,33 @@ describe("the audio commands", () => {
       { state: "level", level: 0.5, probability: 0.9, open: true },
     ]);
   });
+
+  it("starts playing the microphone back with no arguments", async () => {
+    invoke.mockResolvedValue(undefined);
+
+    await audioMonitorStart();
+
+    expect(invoke).toHaveBeenCalledWith("audio_monitor_start");
+  });
+
+  it("stops playing the microphone back with no arguments", async () => {
+    invoke.mockResolvedValue(undefined);
+
+    await audioMonitorStop();
+
+    expect(invoke).toHaveBeenCalledWith("audio_monitor_stop");
+  });
+
+  it("passes a person's volume under the names the Rust command expects", async () => {
+    invoke.mockResolvedValue(undefined);
+
+    await setPersonVolume("@bob:example.org", 140);
+
+    expect(invoke).toHaveBeenCalledWith("set_person_volume", {
+      userId: "@bob:example.org",
+      percent: 140,
+    });
+  });
 });
 
 describe("the call commands", () => {
@@ -890,6 +1045,37 @@ describe("the call commands", () => {
     await callSetDeafened(true);
 
     expect(invoke).toHaveBeenCalledWith("call_set_deafened", { deafened: true });
+  });
+
+  it("asks to go away and to come back by the same command", async () => {
+    invoke.mockResolvedValue(undefined);
+
+    await callSetAway(true);
+
+    expect(invoke).toHaveBeenCalledWith("call_set_away", { away: true });
+  });
+
+  it("subscribes to the channel saying whether a call can be joined", async () => {
+    // Watched rather than asked once, so verifying mid-session is noticed.
+    listen.mockResolvedValue(() => {});
+
+    await onCallReadiness(vi.fn());
+
+    expect(listen).toHaveBeenCalledWith("call-readiness", expect.any(Function));
+  });
+
+  it("hands the readiness handler the payload rather than the envelope", async () => {
+    listen.mockResolvedValue(() => {});
+    const handler = vi.fn();
+    await onCallReadiness(handler);
+    const [, forward] = listen.mock.calls[0] as [
+      string,
+      (event: { payload: CallReadiness }) => void,
+    ];
+
+    forward({ payload: { state: "sessionUnverified" } });
+
+    expect(handler).toHaveBeenCalledWith({ state: "sessionUnverified" });
   });
 
   it("does not put mute on the channel the call is on", async () => {
