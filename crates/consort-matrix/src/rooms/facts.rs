@@ -292,7 +292,7 @@ async fn explain_an_empty_call(room: &Room) {
 /// An empty `m.room.name` is treated as no name at all. It is legal, some
 /// bridges set it, and rendering a room with a blank label is worse than
 /// falling through to a calculated one.
-async fn name_of(room: &Room) -> String {
+pub(crate) async fn name_of(room: &Room) -> String {
     if let Some(name) = room.name().filter(|name| !name.trim().is_empty()) {
         return name;
     }

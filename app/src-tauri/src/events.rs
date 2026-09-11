@@ -129,6 +129,13 @@ pub enum AppEvent {
     /// talking would push the whole conversation across the boundary on every
     /// keystroke either of them made.
     Typing(Typing),
+    /// A room somebody asked to be shown, from outside the webview.
+    ///
+    /// One thing sends this: a click on a desktop notification. It is not a
+    /// state channel and deliberately is not kept, because what it carries is
+    /// a press rather than a fact: replaying it on a reload would move
+    /// somebody to a room they were told about half an hour ago.
+    ShowRoom(String),
     /// Files were dragged onto the window.
     ///
     /// An event rather than a command's answer because nothing asked. Tauri
@@ -171,6 +178,8 @@ impl AppEvent {
     pub const THREAD: &'static str = "thread";
     /// The channel carrying who is typing in the open room.
     pub const TYPING: &'static str = "typing";
+    /// The channel carrying a room a notification asked to be shown.
+    pub const SHOW_ROOM: &'static str = "show-room";
     /// The channel carrying files dragged onto the window.
     pub const DROPPED: &'static str = "dropped";
 
@@ -191,6 +200,7 @@ impl AppEvent {
             Self::Timeline(_) => Self::TIMELINE,
             Self::Thread(_) => Self::THREAD,
             Self::Typing(_) => Self::TYPING,
+            Self::ShowRoom(_) => Self::SHOW_ROOM,
             Self::Dropped(_) => Self::DROPPED,
         }
     }
@@ -263,11 +273,20 @@ impl AppEvent {
             // reload it would put a complaint about a click from twenty
             // minutes ago in front of somebody who has since verified.
             //
+            // A room a notification asked for goes the same way, and for the
+            // same reason: it is a press, not a state. Replaying it would move
+            // somebody to a room the moment their webview reloaded, on the
+            // strength of a notification they clicked half an hour ago.
+            //
             // A drop is an incident for the same reason and a sharper one: it
             // is a thing somebody did once, and replaying it would put a file
             // back in the composer after they had taken it out, or after they
             // had already sent it.
-            Self::Audio(_) | Self::Speaking(_) | Self::CallRefused(_) | Self::Dropped(_) => false,
+            Self::Audio(_)
+            | Self::Speaking(_)
+            | Self::CallRefused(_)
+            | Self::ShowRoom(_)
+            | Self::Dropped(_) => false,
         }
     }
 
@@ -292,6 +311,7 @@ impl AppEvent {
             Self::Timeline(timeline) => serde_json::to_value(timeline),
             Self::Thread(thread) => serde_json::to_value(thread),
             Self::Typing(typing) => serde_json::to_value(typing),
+            Self::ShowRoom(room_id) => serde_json::to_value(room_id),
             Self::Dropped(files) => serde_json::to_value(files),
         }
     }

@@ -13,6 +13,7 @@ const onCall = vi.hoisted(() => vi.fn());
 const onCallRefused = vi.hoisted(() => vi.fn());
 const onSelfAudio = vi.hoisted(() => vi.fn());
 const onSpeaking = vi.hoisted(() => vi.fn());
+const onShowRoom = vi.hoisted(() => vi.fn());
 const onAudio = vi.hoisted(() => vi.fn());
 const callSetMuted = vi.hoisted(() => vi.fn());
 const callSetDeafened = vi.hoisted(() => vi.fn());
@@ -56,6 +57,7 @@ vi.mock("../lib/api", async (importOriginal) => ({
   onCallRefused,
   onSelfAudio,
   onSpeaking,
+  onShowRoom,
   onAudio,
   callSetMuted,
   callSetDeafened,
@@ -109,6 +111,15 @@ function connectionHandler(): (state: Connection) => void {
 function roomsHandler(): (rooms: Rooms) => void {
   const call = onRooms.mock.calls.at(-1) as [(rooms: Rooms) => void] | undefined;
   if (!call) throw new Error("the component never subscribed to rooms");
+  return call[0];
+}
+
+/** The same, for the channel a clicked notification arrives on. */
+function showRoomHandler(): (roomId: string) => void {
+  const call = onShowRoom.mock.calls.at(-1) as
+    | [(roomId: string) => void]
+    | undefined;
+  if (!call) throw new Error("the component never subscribed to show-room");
   return call[0];
 }
 
@@ -183,6 +194,7 @@ function resetApiMocks() {
   onCallRefused.mockReset().mockResolvedValue(() => {});
   onSelfAudio.mockReset().mockResolvedValue(() => {});
   onSpeaking.mockReset().mockResolvedValue(() => {});
+  onShowRoom.mockReset().mockResolvedValue(() => {});
   onAudio.mockReset().mockResolvedValue(() => {});
   callSetMuted.mockReset().mockResolvedValue(undefined);
   callSetDeafened.mockReset().mockResolvedValue(undefined);
@@ -1184,6 +1196,36 @@ describe("SignedIn the room list", () => {
       await screen.findByRole("button", { name: "Home" }),
     ).toHaveAttribute("aria-current", "true");
     expect(screen.getByRole("button", { name: "#aayejayy" })).toBeVisible();
+  });
+
+  it("goes to the room a clicked notification was about", async () => {
+    // The room is in a space the shell is not showing, which is the case that
+    // matters: a notification arrives about wherever the message was, and the
+    // rail has to move as well as the channel list.
+    await showing();
+    await screen.findByRole("button", { name: "Kahu HQ" });
+
+    act(() => showRoomHandler()("!general:example.org"));
+
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(
+      "#general",
+    );
+  });
+
+  it("goes to the same room twice when two notifications about it are clicked", async () => {
+    // A press rather than a value. Two notifications about one room carry the
+    // same room ID, and holding the ID alone would make the second one change
+    // nothing.
+    await showing();
+    await screen.findByRole("button", { name: "Kahu HQ" });
+    act(() => showRoomHandler()("!general:example.org"));
+    await userEvent.click(screen.getByRole("button", { name: "Home" }));
+
+    act(() => showRoomHandler()("!general:example.org"));
+
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(
+      "#general",
+    );
   });
 
   it("shows a space's channels when its rail icon is clicked", async () => {

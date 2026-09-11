@@ -171,6 +171,16 @@ interface Props {
    */
   callRefused: CallRefused | null;
   onDismissRefusal: () => void;
+  /**
+   * A room a desktop notification was clicked to get to, until it is shown.
+   *
+   * A fresh object per press rather than the ID on its own, so that two
+   * notifications about the same room both land: the second would otherwise
+   * be the same value and change nothing.
+   *
+   * Absent when nothing has been clicked, which is almost always.
+   */
+  showRoom?: { roomId: string } | null;
   onSignedOut: () => void;
 }
 
@@ -210,6 +220,7 @@ export function AppShell({
   onSetAway,
   callRefused,
   onDismissRefusal,
+  showRoom = null,
   onSignedOut,
 }: Props) {
   const [spaceId, setSpaceId] = useState(HOME_ID);
@@ -331,6 +342,20 @@ export function AppShell({
     },
     [openRoom],
   );
+
+  /*
+    Show whatever a clicked notification was about.
+
+    Runs again when the room list changes as well as when a press arrives,
+    because the two race: a notification about a room joined a moment ago can
+    be clicked before the rail knows the room exists, and `openRoom` refuses a
+    room it cannot find. Trying again on the next list is what makes that a
+    short wait rather than a press that did nothing.
+  */
+  useEffect(() => {
+    if (showRoom === null) return;
+    openRoom(showRoom.roomId);
+  }, [showRoom, openRoom]);
 
   const links = useMemo<RoomLinks>(
     () => ({

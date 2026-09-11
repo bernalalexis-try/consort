@@ -21,6 +21,8 @@ use consort_call::Dialect;
 use consort_matrix::atomic;
 use serde::{Deserialize, Serialize};
 
+use crate::notify::NotificationSettings;
+
 /// The name of the file inside the application data directory.
 const FILE: &str = "settings.json";
 
@@ -37,6 +39,7 @@ const UNIQUE: &str = "settings";
 pub struct Settings {
     pub audio: AudioSettings,
     pub calls: CallSettings,
+    pub notifications: NotificationSettings,
 }
 
 /// The two things about voice calls that a deployment can get wrong.
@@ -196,6 +199,7 @@ mod tests {
                 ..AudioSettings::default()
             },
             calls: CallSettings::default(),
+            notifications: NotificationSettings::default(),
         }
     }
 
@@ -249,6 +253,37 @@ mod tests {
         assert_eq!(store.load(), chosen);
         let raw = std::fs::read_to_string(store.path()).expect("read");
         assert!(raw.contains("\"fallbackDialect\": \"sticky\""), "{raw}");
+    }
+
+    #[test]
+    fn a_settings_file_written_before_notifications_existed_still_loads() {
+        // And loads with them on. Every settings file already on disk was
+        // written before this section existed, and defaulting them off would
+        // silently give an upgrade fewer notifications than a fresh install.
+        let (_dir, store) = store();
+        std::fs::write(store.path(), br#"{"audio":{"input":"Yeti"}}"#).expect("write");
+
+        let loaded = store.load();
+
+        assert_eq!(loaded.audio.input.as_deref(), Some("Yeti"));
+        assert_eq!(loaded.notifications, NotificationSettings::default());
+    }
+
+    #[test]
+    fn a_chosen_notification_setting_survives_a_round_trip() {
+        let (_dir, store) = store();
+        let chosen = Settings {
+            notifications: NotificationSettings {
+                enabled: true,
+                mentions_only: true,
+                sound: false,
+            },
+            ..Settings::default()
+        };
+
+        store.save(&chosen).expect("save");
+
+        assert_eq!(store.load().notifications, chosen.notifications);
     }
 
     #[test]

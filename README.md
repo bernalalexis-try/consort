@@ -11,9 +11,10 @@ at whatever homeserver you already run.
 [Screenshot of the main window in a text room Here]
 
 > **Status: early.** It signs you in and keeps you signed in, verifies itself,
-> draws your rooms, joins voice channels, and reads and writes text, threads,
-> replies, reactions and attachments, sending included. Editing a message is
-> not built.
+> draws your rooms, joins voice channels, reads and writes text, threads,
+> replies, reactions and attachments, sending included, and tells you when
+> something arrives while you are looking at something else. Editing a message
+> is not built.
 
 ---
 
@@ -55,6 +56,13 @@ at whatever homeserver you already run.
   own address on the clipboard.
 - **Reactions.** Twelve keys to pick from, and any key anybody else sends draws
   correctly. Custom emoji from other clients are shown.
+- **Notifications.** A desktop notification when Consort is not the window you
+  are looking at, or when it is and you are reading a different channel.
+  Clicking one brings the window forward and opens the channel it was about.
+  What counts as worth telling you about is your account's own Matrix push
+  rules, so a room you muted in another client is muted here; Settings adds
+  only what is true of this machine, and nothing is drawn about what happened
+  while Consort was closed.
 
 ---
 
@@ -177,6 +185,7 @@ resource here. The full standard, and what gets a change sent back, is in
 | Voice over MatrixRTC and LiveKit, with device settings | working |
 | Text, attachments, threads, replies, reactions, mentions | working |
 | Sending attachments, by picker, drag or paste | working |
+| Desktop notifications, honouring your push rules | working |
 | Editing, read receipts, upload progress, video thumbnails | planned |
 | Signed and notarised builds for Windows and macOS | someday |
 
@@ -197,6 +206,11 @@ resource here. The full standard, and what gets a change sent back, is in
   H.264 and AAC decoders installed on the machine. Where they are missing the
   clip says so and offers to save itself. On Arch that is `gst-libav`,
   `gst-plugins-ugly` and `gst-plugins-bad`.
+- **Notifications have only been run on Linux.** The Linux path is DBus to
+  whatever notification daemon the desktop runs. The Windows one is a toast
+  attributed to an AppUserModelID that has to match the shortcut the installer
+  writes, and nobody has checked that it does; if toasts do not appear on
+  Windows, that is the first thing to look at.
 - **On a machine with no keyring, the access token falls back to a file** with
   `0600` permissions, and the signed-in screen says so rather than letting you
   assume otherwise. Secret Service is a DBus service rather than a kernel

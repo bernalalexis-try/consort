@@ -5278,3 +5278,221 @@ mod timeline {
         }
     }
 }
+
+/// What is worth interrupting somebody for.
+///
+/// The rule itself is push rules, which are unit-tested against hand-built
+/// actions because that is what the decision is made of. What needs a
+/// homeserver is the wiring either side of it: that a message arriving in a
+/// sync comes out the other end as something to draw, and that the catch-up
+/// sync a restored session begins with does not.
+mod notifications {
+    use super::*;
+    use consort_matrix::{Notification, notifications};
+    use std::time::Duration;
+
+    const ROOM: &str = "!general:example.org";
+
+    /// The membership state the push rules need before they can judge anything.
+    ///
+    /// Not decoration. matrix-sdk-base builds a push context out of the room's
+    /// member count and this account's own display name, and without a
+    /// `m.room.member` for us it produces no context and sets no push actions
+    /// at all, which reads as "nothing worth saying" rather than as the missing
+    /// state it is.
+    fn membership() -> serde_json::Value {
+        serde_json::json!([
+            {
+                "type": "m.room.member",
+                "state_key": USER,
+                "event_id": "$us:example.org",
+                "sender": USER,
+                "origin_server_ts": 1_000,
+                "content": { "membership": "join", "displayname": "Us" },
+            },
+            {
+                "type": "m.room.member",
+                "state_key": "@ada:example.org",
+                "event_id": "$ada:example.org",
+                "sender": "@ada:example.org",
+                "origin_server_ts": 1_000,
+                "content": { "membership": "join", "displayname": "Ada" },
+            },
+        ])
+    }
+
+    /// Answer the next sync with `events` in this room's timeline, once.
+    ///
+    /// One mock per sync rather than one for all of them, because the two
+    /// syncs a test here drives are different moments: the catch-up a session
+    /// starts with, and the live one after it. A single mock answering both
+    /// with the same body is also a body matrix-sdk has already processed, and
+    /// it forwards nothing the second time.
+    async fn next_sync(server: &MatrixMockServer, batch: &str, events: serde_json::Value) {
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/_matrix/client/v3/sync"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "next_batch": batch,
+                    "rooms": {
+                        "join": {
+                            ROOM: {
+                                "state": { "events": membership() },
+                                "timeline": { "events": events, "limited": false },
+                            },
+                        },
+                    },
+                })),
+            )
+            .up_to_n_times(1)
+            .mount(server.server())
+            .await;
+    }
+
+    /// One message from somebody else, as a sync delivers it.
+    fn said(id: &str, body: &str) -> serde_json::Value {
+        serde_json::json!([{
+            "type": "m.room.message",
+            "event_id": id,
+            "sender": "@ada:example.org",
+            "origin_server_ts": 5_000,
+            "content": { "msgtype": "m.text", "body": body },
+        }])
+    }
+
+    /// Sync once, and let whatever the watcher does about it settle.
+    async fn sync_once(client: &matrix_sdk::Client) {
+        client
+            .sync_once(matrix_sdk::config::SyncSettings::default())
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(120)).await;
+    }
+
+    #[tokio::test]
+    async fn the_catch_up_sync_a_session_starts_with_says_nothing() {
+        // A session restored after an afternoon away catches up in one sync
+        // response. Announcing all of it is a screenful of notifications for
+        // news that is hours old, and it is the fastest way to make somebody
+        // turn notifications off.
+        let server = MatrixMockServer::new().await;
+        let (_dir, client) = signed_in(&server).await;
+        next_sync(
+            &server,
+            "s1",
+            said("$away:example.org", "while you were out"),
+        )
+        .await;
+
+        let (seen, sink) = recorder::<Notification>();
+        let watching = notifications::watch(client.clone(), sink);
+        sync_once(&client).await;
+        watching.abort();
+
+        assert!(seen.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_message_arriving_afterwards_is_worth_saying() {
+        let server = MatrixMockServer::new().await;
+        let (_dir, client) = signed_in(&server).await;
+        next_sync(&server, "s1", serde_json::json!([])).await;
+        next_sync(&server, "s2", said("$said:example.org", "are you about?")).await;
+
+        let (seen, sink) = recorder::<Notification>();
+        let watching = notifications::watch(client.clone(), sink);
+        // The first is the catch-up and is skipped; the second is live.
+        sync_once(&client).await;
+        sync_once(&client).await;
+        watching.abort();
+
+        let reports = seen.lock().unwrap().clone();
+        let one = reports.first().expect("a notification, got none");
+        assert_eq!(one.room_id, ROOM);
+        assert_eq!(one.sender, "@ada:example.org");
+        assert_eq!(one.sender_name, "Ada");
+        assert_eq!(one.body, "are you about?");
+        assert_eq!(one.event_id, "$said:example.org");
+    }
+
+    #[tokio::test]
+    async fn nothing_is_said_about_what_this_session_sent() {
+        // The push rules refuse this too. Checking first means not reading
+        // them to find out, and it is the one case that would be drawn at the
+        // exact moment somebody is looking at the box they typed it into.
+        let server = MatrixMockServer::new().await;
+        let (_dir, client) = signed_in(&server).await;
+        next_sync(&server, "s1", serde_json::json!([])).await;
+        next_sync(
+            &server,
+            "s2",
+            serde_json::json!([{
+                "type": "m.room.message",
+                "event_id": "$mine:example.org",
+                "sender": USER,
+                "origin_server_ts": 5_000,
+                "content": { "msgtype": "m.text", "body": "hello" },
+            }]),
+        )
+        .await;
+
+        let (seen, sink) = recorder::<Notification>();
+        let watching = notifications::watch(client.clone(), sink);
+        sync_once(&client).await;
+        sync_once(&client).await;
+        watching.abort();
+
+        assert!(seen.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_same_message_from_somebody_else_is_said() {
+        // The control for the test above. Both send one message on the second
+        // sync and the only difference is who sent it, so a wiring change that
+        // quietly stopped delivering the second sync at all would fail here
+        // rather than pass both.
+        let server = MatrixMockServer::new().await;
+        let (_dir, client) = signed_in(&server).await;
+        next_sync(&server, "s1", serde_json::json!([])).await;
+        next_sync(&server, "s2", said("$theirs:example.org", "hello")).await;
+
+        let (seen, sink) = recorder::<Notification>();
+        let watching = notifications::watch(client.clone(), sink);
+        sync_once(&client).await;
+        sync_once(&client).await;
+        watching.abort();
+
+        assert_eq!(seen.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_reaction_is_not_something_to_interrupt_anybody_about() {
+        let server = MatrixMockServer::new().await;
+        let (_dir, client) = signed_in(&server).await;
+        next_sync(&server, "s1", serde_json::json!([])).await;
+        next_sync(
+            &server,
+            "s2",
+            serde_json::json!([{
+                "type": "m.reaction",
+                "event_id": "$pill:example.org",
+                "sender": "@ada:example.org",
+                "origin_server_ts": 5_000,
+                "content": { "m.relates_to": {
+                    "rel_type": "m.annotation",
+                    "event_id": "$said:example.org",
+                    "key": "\u{1f44d}",
+                }},
+            }]),
+        )
+        .await;
+
+        let (seen, sink) = recorder::<Notification>();
+        let watching = notifications::watch(client.clone(), sink);
+        sync_once(&client).await;
+        sync_once(&client).await;
+        watching.abort();
+
+        assert!(seen.lock().unwrap().is_empty());
+    }
+}

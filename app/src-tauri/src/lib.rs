@@ -15,6 +15,7 @@ mod commands;
 mod ears;
 mod events;
 mod media;
+mod notify;
 mod renderer;
 mod settings;
 mod sound;
@@ -165,28 +166,42 @@ pub fn run() {
                 crate::settings::SettingsStore::at(&data_dir),
                 std::sync::Arc::new(app.handle().clone()),
             ));
+
+            // The same handle again, for the other thing a notification needs:
+            // clicking one has to bring the window forward, and only a handle
+            // can do that. Separate from the sink above because raising a
+            // window and emitting an event are different capabilities, and a
+            // state that took an `AppHandle` for either would be a state no
+            // test could build.
+            app.state::<AppState>()
+                .draw_notifications_with(std::sync::Arc::new(app.handle().clone()));
             Ok(())
         })
-        .on_window_event(|window, event| {
-            match event {
-                WindowEvent::CloseRequested { .. } => {
-                    tracing::info!(label = window.label(), "window closed");
-                }
-                // A drop carries paths rather than bytes, so the read is
-                // Rust's, on the same terms as the picker. It arrives here
-                // rather than in the page because Tauri handles the drop
-                // itself: the webview's own drop events are turned off, which
-                // is what stops a dropped file navigating the window to it.
-                WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) => {
-                    window.state::<AppState>().files_dropped(
-                        paths
-                            .iter()
-                            .filter_map(|path| attaching::chosen(path))
-                            .collect(),
-                    );
-                }
-                _ => {}
+        .on_window_event(|window, event| match event {
+            WindowEvent::CloseRequested { .. } => {
+                tracing::info!(label = window.label(), "window closed");
             }
+            // A drop carries paths rather than bytes, so the read is Rust's,
+            // on the same terms as the picker. It arrives here rather than in
+            // the page because Tauri handles the drop itself: the webview's
+            // own drop events are turned off, which is what stops a dropped
+            // file navigating the window to it.
+            WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) => {
+                window.state::<AppState>().files_dropped(
+                    paths
+                        .iter()
+                        .filter_map(|path| attaching::chosen(path))
+                        .collect(),
+                );
+            }
+            // What stops a notification about the room already on screen.
+            // Tauri reports this for every window; there is one, and taking
+            // its word for the application as a whole is what "the window in
+            // front" means here.
+            WindowEvent::Focused(focused) => {
+                window.state::<AppState>().set_focused(*focused);
+            }
+            _ => {}
         })
         .invoke_handler(tauri::generate_handler![
             commands::session_status,
@@ -223,6 +238,8 @@ pub fn run() {
             commands::audio_devices,
             commands::audio_settings,
             commands::set_audio_settings,
+            commands::notification_settings,
+            commands::set_notification_settings,
             commands::set_person_volume,
             commands::audio_test_start,
             commands::audio_test_stop,

@@ -9,8 +9,9 @@ team chat. Today it does authentication, session verification (emoji and
 recovery key), room key backup, the room list, voice over MatrixRTC and
 LiveKit, reading and sending text in a room, attachments both sent and drawn,
 threads, replies both sent and drawn, reactions, mentions, a typing indicator,
-and `matrix.to` links that go where they point. Editing a message is not built,
-and neither is upload progress or a thumbnail for a clip somebody sends.
+desktop notifications that honour the account's push rules, and `matrix.to`
+links that go where they point. Editing a message is not built, and neither is
+upload progress or a thumbnail for a clip somebody sends.
 
 ## Layout
 
