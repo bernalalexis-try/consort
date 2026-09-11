@@ -51,13 +51,15 @@ mod history;
 mod media;
 mod permalink;
 mod reactions;
+mod sending;
 mod thread;
 
 pub use dto::{Media, Message, MessageKind, Reaction, Thread, ThreadSummary, Timeline, Typing};
 pub use history::History;
-pub use media::{Attachment, bytes, media};
+pub use media::{Attachment, MAX_BYTES, bytes, media};
 pub use permalink::permalink;
 pub use reactions::Reactions;
+pub use sending::{Attaching, send_attachment};
 pub use thread::thread;
 
 use std::collections::{HashMap, HashSet};

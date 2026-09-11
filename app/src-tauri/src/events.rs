@@ -24,6 +24,8 @@ use consort_matrix::{
 };
 use serde::Serialize;
 
+use crate::attaching::Chosen;
+
 /// A join that was not attempted, because it could not have been heard.
 ///
 /// Deliberately not a `CallEvent`. The call thread never produces one: the
@@ -134,6 +136,17 @@ pub enum AppEvent {
     /// a press rather than a fact: replaying it on a reload would move
     /// somebody to a room they were told about half an hour ago.
     ShowRoom(String),
+    /// Files were dragged onto the window.
+    ///
+    /// An event rather than a command's answer because nothing asked. Tauri
+    /// handles the drop itself and the page never sees one, so the only way
+    /// the composer learns that somebody dropped a photo on it is being told.
+    ///
+    /// What is carried is a name, a length and a path, and no bytes: the read
+    /// waits until send, exactly as it does for the picker. Anything dropped
+    /// that is not a file has already been dropped from the list, which is
+    /// what a folder is.
+    Dropped(Vec<Chosen>),
 }
 
 impl AppEvent {
@@ -167,6 +180,8 @@ impl AppEvent {
     pub const TYPING: &'static str = "typing";
     /// The channel carrying a room a notification asked to be shown.
     pub const SHOW_ROOM: &'static str = "show-room";
+    /// The channel carrying files dragged onto the window.
+    pub const DROPPED: &'static str = "dropped";
 
     /// The channel this event goes out on.
     pub fn channel(&self) -> &'static str {
@@ -186,6 +201,7 @@ impl AppEvent {
             Self::Thread(_) => Self::THREAD,
             Self::Typing(_) => Self::TYPING,
             Self::ShowRoom(_) => Self::SHOW_ROOM,
+            Self::Dropped(_) => Self::DROPPED,
         }
     }
 
@@ -261,7 +277,16 @@ impl AppEvent {
             // same reason: it is a press, not a state. Replaying it would move
             // somebody to a room the moment their webview reloaded, on the
             // strength of a notification they clicked half an hour ago.
-            Self::Audio(_) | Self::Speaking(_) | Self::CallRefused(_) | Self::ShowRoom(_) => false,
+            //
+            // A drop is an incident for the same reason and a sharper one: it
+            // is a thing somebody did once, and replaying it would put a file
+            // back in the composer after they had taken it out, or after they
+            // had already sent it.
+            Self::Audio(_)
+            | Self::Speaking(_)
+            | Self::CallRefused(_)
+            | Self::ShowRoom(_)
+            | Self::Dropped(_) => false,
         }
     }
 
@@ -287,6 +312,7 @@ impl AppEvent {
             Self::Thread(thread) => serde_json::to_value(thread),
             Self::Typing(typing) => serde_json::to_value(typing),
             Self::ShowRoom(room_id) => serde_json::to_value(room_id),
+            Self::Dropped(files) => serde_json::to_value(files),
         }
     }
 }
@@ -515,6 +541,29 @@ mod tests {
             payload.get("Connection").is_none(),
             "the variant name leaked into the wire format: {payload}"
         );
+    }
+
+    #[test]
+    fn a_drop_is_not_replayed_to_a_late_subscriber() {
+        // It is a thing somebody did once. Replayed on a reload it would put
+        // a file back in the composer after they had taken it out, or after
+        // they had already sent it.
+        assert!(!AppEvent::Dropped(Vec::new()).is_worth_keeping());
+    }
+
+    #[test]
+    fn a_drop_crosses_as_a_list_the_composer_can_read() {
+        let event = AppEvent::Dropped(vec![crate::attaching::Chosen {
+            path: "/home/ada/cat.png".to_owned(),
+            name: "cat.png".to_owned(),
+            size: 10,
+        }]);
+
+        let payload = event.payload().expect("a drop serialises");
+
+        assert_eq!(payload[0]["name"], "cat.png");
+        assert_eq!(payload[0]["size"], 10);
+        assert_eq!(payload[0]["path"], "/home/ada/cat.png");
     }
 
     #[test]

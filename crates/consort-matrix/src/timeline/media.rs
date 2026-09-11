@@ -40,7 +40,12 @@ use crate::media::{image_type, video_type};
 /// longer cross the IPC boundary as one message and no longer become a second
 /// copy in the webview. It is a ceiling on the absurd rather than a judgement
 /// about what a clip weighs.
-const MAX_BYTES: usize = 512 * 1024 * 1024;
+///
+/// The same number bounds the send side, where an attachment is held whole
+/// while it is uploaded for the same reason. Exported so that the shell can
+/// refuse a file by its length before reading it: a bound applied after the
+/// read has already cost the memory it exists to protect.
+pub const MAX_BYTES: usize = 512 * 1024 * 1024;
 
 /// One attachment, and what its bytes actually are.
 ///

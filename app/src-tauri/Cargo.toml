@@ -48,6 +48,11 @@ tauri = { version = "2", features = [] }
 # For the attachment scheme's URLs. The handle a message carries is JSON, and a
 # path cannot hold quotes and braces as themselves.
 base64 = "0.22"
+# Encoding a pasted screenshot. Every platform's clipboard hands over raw
+# pixels rather than a file, so the PNG has to be made here. No new crate on
+# this target: arboard, which the clipboard plugin already brings, depends on
+# this same version with this same feature.
+image = { version = "0.25", default-features = false, features = ["png"] }
 # One Consort per machine. Two would share one SQLite crypto store and one
 # session file, and the cross-process lock means the second simply fails. See
 # the comment at the plugin registration in lib.rs.
