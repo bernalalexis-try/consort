@@ -1138,13 +1138,124 @@
   box-shadow: var(--shadow-focus);
 }
 
+/*
+  What is about to be sent, on the same shelf as the reply line above it and
+  deliberately looking like it: both are the composer saying what the next
+  press of Send will do.
+*/
+.timeline__staged {
+  display: flex;
+  flex: none;
+  gap: var(--space-2);
+  align-items: center;
+  margin: 0 var(--space-6) var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-raised);
+  border: 1px solid var(--line-subtle);
+  border-radius: var(--radius-md);
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+
+.timeline__staged-glyph {
+  flex: none;
+  width: 14px;
+  height: 14px;
+}
+
+.timeline__staged-name {
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-weight: 600;
+  /* One line, whatever it is called. Plenty of files somebody exported are
+     named with the whole of a sentence. */
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.timeline__staged-size {
+  flex: none;
+}
+
+.timeline__staged-stop {
+  flex: none;
+  margin-left: auto;
+  padding: 0 var(--space-1);
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: var(--text-base);
+  line-height: 1;
+  cursor: pointer;
+}
+
+.timeline__staged-stop:hover {
+  color: var(--text-primary);
+}
+
+.timeline__staged-stop:focus-visible {
+  outline: none;
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-focus);
+}
+
 .timeline__composer {
   display: grid;
   flex: none;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   gap: var(--space-2);
   align-items: end;
   padding: 0 var(--space-6) var(--space-4);
+  /*
+    One height for the row, worked out rather than measured: the box's own
+    line, plus the padding and the border it carries above and below. The
+    button before it and the button after it take the same number, so all
+    three tops agree while the box stays free to grow with what is typed.
+
+    `1lh` rather than a multiplier, so the number follows the type scale and
+    the line height wherever those go next.
+  */
+  --composer-control: calc(1lh + 2 * (var(--space-3) + 1px));
+}
+
+/*
+  Square, and the same height as the box beside it rather than the same height
+  as the words in it, so the row reads as one control strip.
+*/
+.timeline__attach {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--composer-control);
+  height: var(--composer-control);
+  padding: 0;
+  background: var(--surface-raised);
+  border: 1px solid var(--line-subtle);
+  border-radius: var(--radius-md);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: color var(--duration-fast) ease;
+}
+
+.timeline__attach svg {
+  width: 18px;
+  height: 18px;
+}
+
+.timeline__attach:hover:not(:disabled) {
+  color: var(--text-primary);
+}
+
+.timeline__attach:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.timeline__attach:focus-visible {
+  outline: none;
+  border-color: var(--violet);
+  box-shadow: var(--shadow-focus);
 }
 
 /*
@@ -1176,6 +1287,12 @@
     than a broken one.
   */
   field-sizing: content;
+  /*
+    What one row already comes to. Pinned to the shared number rather than left
+    to arithmetic that happens to agree, since it is the height the buttons
+    beside it are taking.
+  */
+  min-height: var(--composer-control);
   max-height: 40vh;
   resize: none;
 }
@@ -1187,9 +1304,16 @@
 }
 
 .timeline__send {
+  min-height: var(--composer-control);
   padding: var(--space-3) var(--space-4);
   background: var(--violet);
-  border: none;
+  /*
+    Transparent rather than absent, so this spends the same pixel on a border
+    that the two bordered surfaces beside it do and the three boxes come to one
+    height. Drawn, it would read as a second affordance around a filled
+    control.
+  */
+  border: 1px solid transparent;
   border-radius: var(--radius-md);
   color: var(--text-primary);
   font: inherit;

@@ -17,6 +17,13 @@ const timelineLater = vi.hoisted(() => vi.fn());
 const timelineGoTo = vi.hoisted(() => vi.fn());
 const timelinePresent = vi.hoisted(() => vi.fn());
 const onTyping = vi.hoisted(() => vi.fn());
+// The three ways an attachment reaches the composer, and the two ways one
+// leaves it.
+const onDropped = vi.hoisted(() => vi.fn());
+const pickAttachment = vi.hoisted(() => vi.fn());
+const attachFile = vi.hoisted(() => vi.fn());
+const attachPasted = vi.hoisted(() => vi.fn());
+const pasteAttachment = vi.hoisted(() => vi.fn());
 const timelineTyping = vi.hoisted(() => vi.fn());
 const timelineSend = vi.hoisted(() => vi.fn());
 const timelineReply = vi.hoisted(() => vi.fn());
@@ -47,6 +54,11 @@ vi.mock("../lib/api", async (importOriginal) => ({
   timelineGoTo,
   timelinePresent,
   onTyping,
+  onDropped,
+  pickAttachment,
+  attachFile,
+  attachPasted,
+  pasteAttachment,
   timelineTyping,
   timelineSend,
   timelineReply,
@@ -137,6 +149,7 @@ let publish: (timeline: Timeline) => void;
 let publishThread: (thread: Thread | null) => void;
 /** And for the typing channel. */
 let publishTyping: (typing: Typing) => void;
+let publishDrop: (files: { path: string; name: string; size: number }[]) => void;
 
 beforeEach(() => {
   resetAvatarCache();
@@ -151,6 +164,19 @@ beforeEach(() => {
   publish = () => {};
   publishThread = () => {};
   publishTyping = () => {};
+  publishDrop = () => {};
+  onDropped
+    .mockReset()
+    .mockImplementation(
+      (handler: (files: { path: string; name: string; size: number }[]) => void) => {
+        publishDrop = handler;
+        return Promise.resolve(() => {});
+      },
+    );
+  pickAttachment.mockReset().mockResolvedValue(null);
+  attachFile.mockReset().mockResolvedValue(undefined);
+  attachPasted.mockReset().mockResolvedValue(undefined);
+  pasteAttachment.mockReset().mockResolvedValue(null);
   timelineTyping.mockReset().mockResolvedValue(undefined);
   onTyping.mockReset().mockImplementation((handler: (t: Typing) => void) => {
     publishTyping = handler;
@@ -1156,6 +1182,298 @@ describe("answering a message", () => {
     expect(
       screen.queryByRole("button", { name: "Stop replying" }),
     ).not.toBeInTheDocument();
+  });
+});
+
+describe("sending an attachment", () => {
+  const CHOSEN = {
+    path: "/home/ada/holiday.png",
+    name: "holiday.png",
+    size: 2048,
+  };
+
+  /** A screenshot on the clipboard, as Rust reports one. */
+  const SHOT = { name: "pasted-image.png", size: 4096 };
+
+  /** Press Ctrl+V, wherever the focus happens to be. */
+  async function paste() {
+    await act(async () => {
+      fireEvent.keyDown(window, { key: "v", ctrlKey: true });
+    });
+  }
+
+  it("puts what the picker returned in the composer without sending it", async () => {
+    // Two moments on purpose: the box below is the caption, so a file that
+    // sent itself on sight would leave nowhere to say anything about it.
+    pickAttachment.mockResolvedValue(CHOSEN);
+    await pane();
+
+    await userEvent.click(screen.getByRole("button", { name: "Attach a file" }));
+
+    expect(await screen.findByText("holiday.png")).toBeVisible();
+    expect(attachFile).not.toHaveBeenCalled();
+  });
+
+  it("says how large the file is, in words", async () => {
+    pickAttachment.mockResolvedValue(CHOSEN);
+    await pane();
+
+    await userEvent.click(screen.getByRole("button", { name: "Attach a file" }));
+
+    expect(await screen.findByText("2.0 KB")).toBeVisible();
+  });
+
+  it("draws nothing when the picker was closed without choosing", async () => {
+    // Not a failure and must not be drawn as one.
+    pickAttachment.mockResolvedValue(null);
+    await pane();
+
+    await userEvent.click(screen.getByRole("button", { name: "Attach a file" }));
+
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Do not send/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("sends the file with the box as its caption", async () => {
+    pickAttachment.mockResolvedValue(CHOSEN);
+    await pane();
+    await userEvent.click(screen.getByRole("button", { name: "Attach a file" }));
+    await screen.findByText("holiday.png");
+
+    await userEvent.type(screen.getByRole("textbox"), "look at this");
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    expect(attachFile).toHaveBeenCalledWith(
+      GENERAL,
+      "/home/ada/holiday.png",
+      "look at this",
+      null,
+    );
+    expect(timelineSend).not.toHaveBeenCalled();
+  });
+
+  it("sends a file nobody captioned", async () => {
+    // The ordinary case. An empty box is not a caption of nothing, it is no
+    // caption at all, and sending one would put a blank line under the
+    // picture.
+    pickAttachment.mockResolvedValue(CHOSEN);
+    await pane();
+    await userEvent.click(screen.getByRole("button", { name: "Attach a file" }));
+    await screen.findByText("holiday.png");
+
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    expect(attachFile).toHaveBeenCalledWith(
+      GENERAL,
+      "/home/ada/holiday.png",
+      null,
+      null,
+    );
+  });
+
+  it("answers a message with a picture rather than sending two things", async () => {
+    pickAttachment.mockResolvedValue(CHOSEN);
+    await pane();
+    await arrive(timeline([said("$1", ADA, "what does it look like")]));
+    await userEvent.click(screen.getByRole("button", { name: "Reply" }));
+    await userEvent.click(screen.getByRole("button", { name: "Attach a file" }));
+    await screen.findByText("holiday.png");
+
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    expect(attachFile).toHaveBeenCalledWith(
+      GENERAL,
+      "/home/ada/holiday.png",
+      null,
+      "$1",
+    );
+    expect(timelineReply).not.toHaveBeenCalled();
+  });
+
+  it("clears the composer once the homeserver has it", async () => {
+    pickAttachment.mockResolvedValue(CHOSEN);
+    await pane();
+    await userEvent.click(screen.getByRole("button", { name: "Attach a file" }));
+    await screen.findByText("holiday.png");
+    await userEvent.type(screen.getByRole("textbox"), "look");
+
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    await waitFor(() => expect(screen.getByRole("textbox")).toHaveValue(""));
+    expect(screen.queryByText("holiday.png")).not.toBeInTheDocument();
+  });
+
+  it("keeps the file and the caption when the send fails", async () => {
+    // Opening the picker again is the same loss as retyping a message, and
+    // for a screenshot that has since been deleted it is worse than that.
+    attachFile.mockRejectedValue({ message: "too large", detail: "413" });
+    pickAttachment.mockResolvedValue(CHOSEN);
+    await pane();
+    await userEvent.click(screen.getByRole("button", { name: "Attach a file" }));
+    await screen.findByText("holiday.png");
+    await userEvent.type(screen.getByRole("textbox"), "look");
+
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("too large");
+    expect(screen.getByRole("textbox")).toHaveValue("look");
+    expect(screen.getByText("holiday.png")).toBeVisible();
+  });
+
+  it("takes the file back out when the control is pressed", async () => {
+    pickAttachment.mockResolvedValue(CHOSEN);
+    await pane();
+    await userEvent.click(screen.getByRole("button", { name: "Attach a file" }));
+    await screen.findByText("holiday.png");
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Do not send holiday.png" }),
+    );
+
+    expect(screen.queryByText("holiday.png")).not.toBeInTheDocument();
+  });
+
+  it("takes the file back out on Escape in the box", async () => {
+    pickAttachment.mockResolvedValue(CHOSEN);
+    await pane();
+    await userEvent.click(screen.getByRole("button", { name: "Attach a file" }));
+    await screen.findByText("holiday.png");
+
+    await userEvent.type(screen.getByRole("textbox"), "{Escape}");
+
+    expect(screen.queryByText("holiday.png")).not.toBeInTheDocument();
+  });
+
+  it("does not carry a staged file into another channel", async () => {
+    // A picture left in the composer and carried into another channel is a
+    // picture that goes to the wrong people.
+    pickAttachment.mockResolvedValue(CHOSEN);
+    const { rerender } = render(
+      <RoomTimeline selfId={BOB} onOpenRoom={vi.fn()} channel={general} />,
+    );
+    await waitFor(() => expect(timelineOpen).toHaveBeenCalled());
+    await userEvent.click(screen.getByRole("button", { name: "Attach a file" }));
+    await screen.findByText("holiday.png");
+
+    rerender(<RoomTimeline selfId={BOB} onOpenRoom={vi.fn()} channel={lounge} />);
+
+    await waitFor(() =>
+      expect(screen.queryByText("holiday.png")).not.toBeInTheDocument(),
+    );
+  });
+
+  it("stages a file dropped onto the window", async () => {
+    // The drop arrives from Rust rather than from a drop event here: Tauri
+    // handles it, which is what stops a dropped file navigating the window.
+    await pane();
+
+    await act(async () => {
+      publishDrop([CHOSEN]);
+    });
+
+    expect(screen.getByText("holiday.png")).toBeVisible();
+  });
+
+  it("says so when more than one file is dropped", async () => {
+    // Two would change the picker, this line and what a failure halfway
+    // through means, all at once. Sending the first silently is the version
+    // of that which loses the other.
+    await pane();
+
+    await act(async () => {
+      publishDrop([CHOSEN, { ...CHOSEN, name: "other.png" }]);
+    });
+
+    expect(screen.getByRole("alert")).toHaveTextContent("one attachment");
+    expect(screen.getByText("holiday.png")).toBeVisible();
+  });
+
+  it("says so when what was dropped was not a file at all", async () => {
+    // A folder. Rust has already dropped it from the list, so the composer
+    // gets an empty one, and a drop that appears to have done nothing is
+    // worse than being told.
+    await pane();
+
+    await act(async () => {
+      publishDrop([]);
+    });
+
+    expect(screen.getByRole("alert")).toHaveTextContent("was not one");
+  });
+
+  it("sends a pasted screenshot by asking for the one Rust is holding", async () => {
+    // Nothing about the picture is on this side. What the composer draws is a
+    // name and a length, exactly as it does for a file it never opened.
+    pasteAttachment.mockResolvedValue(SHOT);
+    await pane();
+
+    await paste();
+
+    expect(screen.getByText("pasted-image.png")).toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    await waitFor(() =>
+      expect(attachPasted).toHaveBeenCalledWith(GENERAL, null, null),
+    );
+    expect(attachFile).not.toHaveBeenCalled();
+  });
+
+  it("stages a screenshot with the composer unfocused", async () => {
+    // The keystroke is watched on the window rather than on the box, because
+    // the clipboard is read in Rust and none of it needs focus.
+    pasteAttachment.mockResolvedValue(SHOT);
+    await pane();
+    (document.activeElement as HTMLElement | null)?.blur();
+
+    await paste();
+
+    expect(screen.getByText("pasted-image.png")).toBeVisible();
+  });
+
+  it("stages nothing when the clipboard held words", async () => {
+    // Text copied out of a spreadsheet arrives as words and a rendering of
+    // them, and staging the picture would lose what somebody meant to paste.
+    // Rust answers with nothing, and the keystroke is never prevented, so the
+    // words go on reaching the box.
+    pasteAttachment.mockResolvedValue(null);
+    await pane();
+
+    await paste();
+
+    expect(
+      screen.queryByRole("button", { name: /Do not send/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("leaves a paste aimed at another box to that box", async () => {
+    // The thread panel has a composer of its own. Without this, pasting a
+    // screenshot into a thread would stage it in the channel behind it.
+    pasteAttachment.mockResolvedValue(SHOT);
+    await pane();
+    const elsewhere = document.createElement("textarea");
+    document.body.append(elsewhere);
+    elsewhere.focus();
+
+    await paste();
+
+    expect(pasteAttachment).not.toHaveBeenCalled();
+    elsewhere.remove();
+  });
+
+  it("says so rather than staging a screenshot it could not read", async () => {
+    pasteAttachment.mockRejectedValue({
+      message: "no clipboard here",
+      detail: "no clipboard here",
+    });
+    await pane();
+
+    await paste();
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "no clipboard here",
+    );
   });
 });
 
