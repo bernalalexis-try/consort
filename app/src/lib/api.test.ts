@@ -40,6 +40,7 @@ import {
   onVerification,
   onKeyBackup,
   onRooms,
+  onShowRoom,
   onVerificationFlow,
   onAudio,
   onThread,
@@ -68,6 +69,8 @@ import {
   timelineUnreact,
   privacySettings,
   setPrivacySettings,
+  notificationSettings,
+  setNotificationSettings,
   resendState,
   roomAvatar,
   setAudioSettings,
@@ -632,6 +635,24 @@ describe("event subscriptions", () => {
     });
   });
 
+  it("reads when to interrupt somebody", async () => {
+    await notificationSettings();
+
+    expect(invoke).toHaveBeenCalledWith("notification_settings");
+  });
+
+  it("saves the whole notification section rather than one field", async () => {
+    await setNotificationSettings({
+      enabled: true,
+      mentionsOnly: true,
+      sound: false,
+    });
+
+    expect(invoke).toHaveBeenCalledWith("set_notification_settings", {
+      notifications: { enabled: true, mentionsOnly: true, sound: false },
+    });
+  });
+
   it("asks Rust to open a link rather than following it", async () => {
     // Following it in the webview would replace Consort with the website.
     await openLink("https://example.org");
@@ -784,6 +805,12 @@ describe("event subscriptions", () => {
     await onRooms(vi.fn());
 
     expect(listen).toHaveBeenCalledWith("rooms", expect.any(Function));
+  });
+
+  it("subscribes to the show-room channel by the name Rust emits on", async () => {
+    await onShowRoom(vi.fn());
+
+    expect(listen).toHaveBeenCalledWith("show-room", expect.any(Function));
   });
 
   it("hands the rooms handler the whole tree rather than the envelope", async () => {

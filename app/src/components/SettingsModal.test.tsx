@@ -10,6 +10,8 @@ const onAudio = vi.hoisted(() => vi.fn());
 const logout = vi.hoisted(() => vi.fn());
 const privacySettings = vi.hoisted(() => vi.fn());
 const setPrivacySettings = vi.hoisted(() => vi.fn());
+const notificationSettings = vi.hoisted(() => vi.fn());
+const setNotificationSettings = vi.hoisted(() => vi.fn());
 
 vi.mock("../lib/api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/api")>()),
@@ -21,6 +23,8 @@ vi.mock("../lib/api", async (importOriginal) => ({
   logout,
   privacySettings,
   setPrivacySettings,
+  notificationSettings,
+  setNotificationSettings,
 }));
 
 import { SettingsModal } from "./SettingsModal";
@@ -81,6 +85,12 @@ describe("SettingsModal", () => {
     logout.mockReset().mockResolvedValue(undefined);
     privacySettings.mockReset().mockResolvedValue({ publicReadReceipts: true });
     setPrivacySettings.mockReset().mockResolvedValue(undefined);
+    notificationSettings.mockReset().mockResolvedValue({
+      enabled: true,
+      mentionsOnly: false,
+      sound: true,
+    });
+    setNotificationSettings.mockReset().mockResolvedValue(undefined);
   });
 
   it("is a modal dialog with a name", () => {
@@ -214,6 +224,20 @@ describe("SettingsModal", () => {
     expect(
       await screen.findByRole("switch", {
         name: "Let people see when you have read their messages",
+      }),
+    ).toBeVisible();
+  });
+
+  it("goes to Notifications when asked", async () => {
+    open();
+
+    await userEvent.click(
+      screen.getByRole("button", { name: /notifications/i }),
+    );
+
+    expect(
+      await screen.findByRole("switch", {
+        name: "Tell me when something arrives",
       }),
     ).toBeVisible();
   });

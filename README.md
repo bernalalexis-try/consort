@@ -13,7 +13,8 @@ at whatever homeserver you already run.
 > **Status: early.** It signs you in and keeps you signed in, verifies itself,
 > draws your rooms, joins voice channels, and reads and writes text, threads,
 > replies, reactions and attachments, sending included. It marks what you have
-> not read and remembers where you stopped. Editing a message is not built.
+> not read, remembers where you stopped, and tells you when something arrives
+> while you are looking at something else. Editing a message is not built.
 
 ---
 
@@ -60,6 +61,13 @@ at whatever homeserver you already run.
   you come back to opens where you left off with a line across it. Read
   receipts go out publicly by default, the way every other Matrix client sends
   them; Settings has a switch that keeps them to your own account instead.
+- **Notifications.** A desktop notification when Consort is not the window you
+  are looking at, or when it is and you are reading a different channel.
+  Clicking one brings the window forward and opens the channel it was about.
+  What counts as worth telling you about is your account's own Matrix push
+  rules, so a room you muted in another client is muted here; Settings adds
+  only what is true of this machine, and nothing is drawn about what happened
+  while Consort was closed.
 
 ---
 
@@ -183,6 +191,7 @@ resource here. The full standard, and what gets a change sent back, is in
 | Text, attachments, threads, replies, reactions, mentions | working |
 | Sending attachments, by picker, drag or paste | working |
 | Read receipts, unread channels, where reading stopped | working |
+| Desktop notifications, honouring your push rules | working |
 | Editing, upload progress, video thumbnails | planned |
 | Signed and notarised builds for Windows and macOS | someday |
 
@@ -203,6 +212,11 @@ resource here. The full standard, and what gets a change sent back, is in
   H.264 and AAC decoders installed on the machine. Where they are missing the
   clip says so and offers to save itself. On Arch that is `gst-libav`,
   `gst-plugins-ugly` and `gst-plugins-bad`.
+- **Notifications have only been run on Linux.** The Linux path is DBus to
+  whatever notification daemon the desktop runs. The Windows one is a toast
+  attributed to an AppUserModelID that has to match the shortcut the installer
+  writes, and nobody has checked that it does; if toasts do not appear on
+  Windows, that is the first thing to look at.
 - **On a machine with no keyring, the access token falls back to a file** with
   `0600` permissions, and the signed-in screen says so rather than letting you
   assume otherwise. Secret Service is a DBus service rather than a kernel

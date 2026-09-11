@@ -22,6 +22,7 @@ use tauri::State;
 
 use crate::attaching;
 use crate::audio::Backends;
+use crate::notify::NotificationSettings;
 use crate::settings::PrivacySettings;
 use crate::state::{AppState, CallAudio};
 
@@ -558,6 +559,25 @@ fn set_privacy_settings_for(
 ) -> Result<(), crate::settings::SettingsError> {
     let mut settings = state.settings().load();
     settings.privacy = privacy;
+    state.settings().save(&settings)
+}
+
+/// When to interrupt somebody, and how loudly.
+fn notification_settings_for(state: &AppState) -> NotificationSettings {
+    state.settings().load().notifications
+}
+
+/// Replace them.
+///
+/// Nothing already drawn is taken back. A notification is an interruption that
+/// has already happened by the time anybody can change a setting about it, so
+/// these take effect at the next message rather than retrospectively.
+fn set_notification_settings_for(
+    state: &AppState,
+    notifications: NotificationSettings,
+) -> Result<(), crate::settings::SettingsError> {
+    let mut settings = state.settings().load();
+    settings.notifications = notifications;
     state.settings().save(&settings)
 }
 
@@ -1486,6 +1506,22 @@ pub fn set_privacy_settings(
     Ok(())
 }
 
+/// See `notification_settings_for`.
+#[tauri::command]
+pub fn notification_settings(state: State<'_, AppState>) -> NotificationSettings {
+    notification_settings_for(&state)
+}
+
+/// See `set_notification_settings_for`.
+#[tauri::command]
+pub fn set_notification_settings(
+    state: State<'_, AppState>,
+    notifications: NotificationSettings,
+) -> Result<(), CommandError> {
+    set_notification_settings_for(&state, notifications)?;
+    Ok(())
+}
+
 /// See `timeline_typing_for`.
 #[tauri::command]
 pub async fn timeline_typing(
@@ -2157,6 +2193,57 @@ mod tests {
         }
 
         #[test]
+        fn notifications_are_on_until_somebody_says_otherwise() {
+            let (_dir, state, _) = state();
+
+            assert_eq!(
+                notification_settings_for(&state),
+                NotificationSettings::default()
+            );
+        }
+
+        #[test]
+        fn what_was_chosen_about_notifications_is_what_loads_back() {
+            let (_dir, state, _) = state();
+            let chosen = NotificationSettings {
+                enabled: true,
+                mentions_only: true,
+                sound: false,
+            };
+
+            set_notification_settings_for(&state, chosen).expect("save");
+
+            assert_eq!(notification_settings_for(&state), chosen);
+        }
+
+        #[test]
+        fn saving_notifications_leaves_the_audio_section_alone() {
+            // Two screens, neither holding the other's fields. A write from
+            // one that took the whole file with it would silently undo the
+            // other.
+            let (_dir, state, _) = state();
+            set_audio_settings_for(
+                &state,
+                AudioSettings {
+                    input: Some("Yeti".to_owned()),
+                    ..AudioSettings::default()
+                },
+            )
+            .expect("save");
+
+            set_notification_settings_for(
+                &state,
+                NotificationSettings {
+                    enabled: false,
+                    ..NotificationSettings::default()
+                },
+            )
+            .expect("save");
+
+            assert_eq!(audio_settings_for(&state).input.as_deref(), Some("Yeti"));
+        }
+
+        #[test]
         fn marking_a_message_read_with_no_room_open_does_nothing() {
             // What a scroll landing at the same moment as a room change is.
             // There is no watcher to answer it, and inventing one would send
@@ -2180,6 +2267,7 @@ mod tests {
                     service_url_fallback: Some("https://example.org/sfu".to_owned()),
                 },
                 privacy: crate::settings::PrivacySettings::default(),
+                notifications: NotificationSettings::default(),
             };
             state.settings().save(&stored).expect("save");
 

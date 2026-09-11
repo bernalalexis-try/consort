@@ -46,7 +46,7 @@
 mod answering;
 mod around;
 pub mod dto;
-mod facts;
+pub(crate) mod facts;
 mod history;
 mod media;
 mod permalink;

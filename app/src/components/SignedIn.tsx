@@ -16,6 +16,7 @@ import {
   onConnection,
   onKeyBackup,
   onRooms,
+  onShowRoom,
   onVerification,
   onVerificationFlow,
   resendState,
@@ -103,6 +104,16 @@ export function SignedIn({ profile, onSignedOut }: Props) {
   // the call panel because the panel unmounts between calls and this arrives
   // as the call is starting, which is exactly when it would be missed.
   const [audioProblem, setAudioProblem] = useState<string | null>(null);
+  /*
+    The room a desktop notification was clicked to get to, until the shell has
+    shown it. A fresh object per press rather than the ID on its own, so that
+    two notifications about the same room both land: the second would otherwise
+    be the same value and change nothing.
+
+    Held here rather than in the shell, because this is where the subscriptions
+    live and the shell is where the selection does. The shell spends it.
+  */
+  const [asked, setAsked] = useState<{ roomId: string } | null>(null);
 
   function dismiss(flowId: string) {
     setFlows((current) => {
@@ -157,6 +168,12 @@ export function SignedIn({ profile, onSignedOut }: Props) {
       }).then(keep),
       onSpeaking((userIds) => {
         if (!cancelled) setSpeaking(new Set(userIds));
+      }).then(keep),
+      // A desktop notification somebody clicked. The window is already in
+      // front by the time this arrives, because raising it is something only
+      // Rust can do; what is left is showing the room it was about.
+      onShowRoom((roomId) => {
+        if (!cancelled) setAsked({ roomId });
       }).then(keep),
       // Only the call's own output, out of a channel that also carries the
       // settings screen's microphone test and its level readings. A failed
@@ -291,6 +308,7 @@ export function SignedIn({ profile, onSignedOut }: Props) {
       onSetAway={setAway}
       callRefused={callRefused}
       onDismissRefusal={() => setCallRefused(null)}
+      showRoom={asked}
       onSignedOut={onSignedOut}
     />
   );

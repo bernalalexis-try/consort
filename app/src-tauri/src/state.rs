@@ -8,7 +8,7 @@ use std::sync::Arc;
 use consort_call::{CallEvent, CallTransport, Microphone};
 use consort_matrix::{
     CallReadiness, Client, Connection, Rooms, SessionStore, StopReason, Timeline, Typing, backup,
-    calls, rooms, sync, timeline, verification,
+    calls, notifications, rooms, sync, timeline, verification,
 };
 use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
@@ -19,6 +19,7 @@ use crate::audio::Backends;
 use crate::call::CallBridge;
 use crate::ears::speakers;
 use crate::events::{AppEvent, CallRefused, EventSink, LatestSink};
+use crate::notify::{Front, Notifier, worth_drawing};
 use crate::settings::SettingsStore;
 use crate::sound::Sound;
 
@@ -210,6 +211,14 @@ pub struct AppState {
     /// store, so an account that has synced before is drawn immediately and
     /// correctly while offline.
     rooms_task: TaskSlot,
+    /// The watcher deciding what is worth interrupting somebody for.
+    ///
+    /// Its own task rather than a branch inside the room watcher, because the
+    /// two read the same sync updates to answer unrelated questions: one is
+    /// about what the list looks like now, the other about what just happened.
+    /// One task doing both would have to publish a room list to say something
+    /// about a message.
+    notification_task: TaskSlot,
     /// The way to start a verification rather than answer one.
     ///
     /// Beside `flow_task` rather than inside it because the two are different
@@ -301,6 +310,98 @@ pub struct AppState {
     /// A `std::sync::Mutex` rather than tokio's. Nothing here awaits while
     /// holding it, and the commands that reach it are synchronous.
     call: std::sync::Mutex<Option<CallBridge>>,
+    /// What the notification watcher reads to decide whether to interrupt.
+    ///
+    /// Shared rather than read back off this struct, because the watcher's
+    /// closure has to be `'static` and this struct is owned by Tauri.
+    attention: Attention,
+    /// Where a notification is drawn, once there is a window to draw beside.
+    ///
+    /// `None` in a test, and in the moment between this struct being built and
+    /// Tauri's setup running. Nothing is lost by that: a notification with
+    /// nowhere to go is one nobody could have clicked.
+    ///
+    /// Read at the moment one is drawn rather than captured when the watcher
+    /// starts, because a session restored during setup starts its watcher
+    /// before the window exists.
+    notifier: Arc<std::sync::Mutex<Option<Arc<Notifier>>>>,
+}
+
+/// Whether somebody is already looking at what is about to be announced.
+///
+/// Two questions and they are only useful together: Consort in the background
+/// with a room open is a Consort nobody can see, and Consort in front on a
+/// different room is a room they are not reading. See
+/// [`crate::notify::worth_drawing`], which is where the two are combined.
+#[derive(Clone, Default)]
+struct Attention {
+    /// Whether the window is the one in front.
+    ///
+    /// An atomic rather than a lock: it is read for every message that arrives
+    /// anywhere on the account and must not wait on anything.
+    ///
+    /// Starts false, which is honest before the window is drawn and is the
+    /// safe way round either way. Being wrong here costs a notification about
+    /// a room somebody was already reading; being wrong the other way costs
+    /// silence about one they were not.
+    focused: Arc<std::sync::atomic::AtomicBool>,
+    /// The room on screen, or `None` when no room is open.
+    showing: Arc<std::sync::Mutex<Option<String>>>,
+}
+
+/// Whether to interrupt somebody about a message, and how loudly.
+///
+/// Owned by the notification watcher's closure, which has to be `'static`, so
+/// everything it reads is held rather than borrowed from [`AppState`].
+#[derive(Clone)]
+struct Interrupting {
+    attention: Attention,
+    settings: SettingsStore,
+}
+
+impl Interrupting {
+    /// `Some(sound)` when this one should be drawn, `None` when it should not.
+    ///
+    /// The settings are read here rather than held, so a switch turned off
+    /// mid-session takes effect on the next message rather than on the next
+    /// sign-in. A settings file is a few hundred bytes and a message is not a
+    /// frame of audio.
+    fn about(&self, one: &consort_matrix::Notification) -> Option<bool> {
+        let chosen = self.settings.load().notifications;
+        if !worth_drawing(
+            one,
+            chosen,
+            self.attention.focused(),
+            self.attention.showing().as_deref(),
+        ) {
+            return None;
+        }
+
+        // Both have to agree. The push rules decide whether this message is
+        // one worth a sound, and the setting decides whether this machine
+        // makes them at all.
+        Some(chosen.sound && one.sound)
+    }
+}
+
+impl Attention {
+    fn focused(&self) -> bool {
+        self.focused.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn showing(&self) -> Option<String> {
+        self.showing
+            .lock()
+            .expect("the open-room mutex is never poisoned")
+            .clone()
+    }
+
+    fn show(&self, room_id: Option<String>) {
+        *self
+            .showing
+            .lock()
+            .expect("the open-room mutex is never poisoned") = room_id;
+    }
 }
 
 impl AppState {
@@ -349,6 +450,9 @@ impl AppState {
             call_audio: Arc::new(std::sync::Mutex::new(None)),
             timeline: std::sync::Mutex::new(None),
             call: std::sync::Mutex::new(None),
+            notification_task: Mutex::new(None),
+            attention: Attention::default(),
+            notifier: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -610,6 +714,12 @@ impl AppState {
             return;
         };
 
+        // Before the watcher rather than after it, because what this stops is
+        // a notification about the room somebody has just opened: the message
+        // that opened it may already be on its way through the sync the click
+        // raced.
+        self.attention.show(Some(room_id.clone()));
+
         let events = self.events.clone();
         let for_threads = self.events.clone();
         let for_typing = self.events.clone();
@@ -624,6 +734,64 @@ impl AppState {
         ));
     }
 
+    /// What to do with something worth interrupting somebody for.
+    ///
+    /// A closure rather than a method, because the watcher holds it for the
+    /// life of the session and cannot borrow this struct. Everything it reads
+    /// is read at the moment a message arrives: the settings, so a switch
+    /// turned off mid-session takes effect; the window's focus and the room on
+    /// screen, because both change constantly; and the notifier, because a
+    /// session restored during setup starts its watcher before the window
+    /// exists.
+    fn notifying(&self) -> impl Fn(consort_matrix::Notification) + Send + Sync + 'static {
+        let interrupting = self.interrupting();
+        let notifier = self.notifier.clone();
+
+        move |one| {
+            let Some(sound) = interrupting.about(&one) else {
+                return;
+            };
+            let Some(notifier) = notifier
+                .lock()
+                .expect("the notifier mutex is never poisoned")
+                .clone()
+            else {
+                return;
+            };
+            notifier.draw(one, sound);
+        }
+    }
+
+    fn interrupting(&self) -> Interrupting {
+        Interrupting {
+            attention: self.attention.clone(),
+            settings: self.settings.clone(),
+        }
+    }
+
+    /// Say where notifications are drawn, and what a click on one raises.
+    ///
+    /// Called once, from Tauri's setup, as soon as there is an `AppHandle` to
+    /// hand over. Separate from [`Self::new`] because that runs before the
+    /// application exists and has to stay callable from a test.
+    pub fn draw_notifications_with(&self, front: Arc<dyn Front>) {
+        *self
+            .notifier
+            .lock()
+            .expect("the notifier mutex is never poisoned") =
+            Some(Arc::new(Notifier::new(self.events.clone(), front)));
+    }
+
+    /// Say whether the window is the one in front.
+    ///
+    /// Called from Tauri's window event handler. A window that has gone is
+    /// reported as not in front, which is what it is.
+    pub fn set_focused(&self, focused: bool) {
+        self.attention
+            .focused
+            .store(focused, std::sync::atomic::Ordering::Relaxed);
+    }
+
     /// Stop watching whatever room was open, and say so.
     ///
     /// The parting word is the point. This channel keeps its latest value for
@@ -635,6 +803,7 @@ impl AppState {
     /// session owns: the watcher holds a `Client`, so leaving one running
     /// would keep the previous account's client alive behind the next login.
     pub fn close_room(&self) {
+        self.attention.show(None);
         if self.locked_timeline().take().is_some() {
             self.events.emit(AppEvent::Timeline(Timeline::default()));
             // The thread went with the watcher that owned it, and a panel left
@@ -889,6 +1058,16 @@ impl AppState {
         )
         .await;
 
+        // Started after the room watcher rather than before it, so the two
+        // subscribe in the order they are read: the list of rooms is what a
+        // notification's room has to be findable in when somebody clicks it.
+        let notifying = self.notifying();
+        replace_task(
+            &self.notification_task,
+            notifications::watch(client.clone(), notifying),
+        )
+        .await;
+
         // Whether this session could be heard in an encrypted call, for as
         // long as the session lasts rather than once at startup.
         //
@@ -967,6 +1146,11 @@ impl AppState {
         stop_task(&self.readiness_task).await;
         stop_task(&self.flow_task).await;
         stop_task(&self.backup_task).await;
+        // No parting word. A notification is drawn the moment it is decided
+        // and there is nothing retained to correct: what would be wrong is a
+        // notification about the previous account's room, and stopping the
+        // task is what stops that.
+        stop_task(&self.notification_task).await;
         *self.initiator.lock().await = None;
 
         // The room list does get a parting word, unlike the two verification
@@ -1163,6 +1347,107 @@ mod tests {
         let sink = Arc::new(RecordingSink::new());
         let settings = SettingsStore::at(dir.path());
         (dir, AppState::new(store, settings, sink.clone()), sink)
+    }
+
+    mod interrupting {
+        use super::*;
+        use crate::notify::NotificationSettings;
+
+        fn arrived() -> consort_matrix::Notification {
+            consort_matrix::Notification {
+                room_id: GENERAL.to_owned(),
+                room_name: "general".to_owned(),
+                event_id: "$said:example.org".to_owned(),
+                sender: "@ada:example.org".to_owned(),
+                sender_name: "Ada".to_owned(),
+                body: "are you about?".to_owned(),
+                mention: false,
+                sound: true,
+            }
+        }
+
+        #[tokio::test]
+        async fn a_message_arriving_while_nothing_is_open_is_worth_drawing() {
+            let (_dir, state, _sink) = state();
+
+            assert_eq!(state.interrupting().about(&arrived()), Some(true));
+        }
+
+        #[tokio::test]
+        async fn the_window_coming_forward_on_the_room_in_question_silences_it() {
+            // The pair that has to be wired, and the reason this is tested
+            // through the state rather than against `worth_drawing` alone:
+            // the rule is pure and correct, and the two things that feed it
+            // arrive from a window event and a room change.
+            let (_dir, state, _sink) = state();
+            state.set_focused(true);
+            state.attention.show(Some(GENERAL.to_owned()));
+
+            assert_eq!(state.interrupting().about(&arrived()), None);
+        }
+
+        #[tokio::test]
+        async fn closing_the_room_lets_it_through_again() {
+            let (_dir, state, _sink) = state();
+            state.set_focused(true);
+            state.attention.show(Some(GENERAL.to_owned()));
+
+            state.close_room();
+
+            assert_eq!(state.interrupting().about(&arrived()), Some(true));
+        }
+
+        #[tokio::test]
+        async fn a_window_that_went_behind_something_says_it_again() {
+            let (_dir, state, _sink) = state();
+            state.attention.show(Some(GENERAL.to_owned()));
+            state.set_focused(true);
+
+            state.set_focused(false);
+
+            assert_eq!(state.interrupting().about(&arrived()), Some(true));
+        }
+
+        #[tokio::test]
+        async fn a_setting_changed_mid_session_takes_effect_on_the_next_message() {
+            // Read at the moment a message arrives rather than when the
+            // watcher started. A switch that only worked after a restart is a
+            // switch somebody presses twice and then gives up on.
+            let (_dir, state, _sink) = state();
+            let interrupting = state.interrupting();
+            let mut settings = state.settings().load();
+            settings.notifications = NotificationSettings {
+                enabled: false,
+                ..NotificationSettings::default()
+            };
+            state.settings().save(&settings).expect("save");
+
+            assert_eq!(interrupting.about(&arrived()), None);
+        }
+
+        #[tokio::test]
+        async fn a_machine_with_sounds_off_still_draws_the_notification() {
+            let (_dir, state, _sink) = state();
+            let mut settings = state.settings().load();
+            settings.notifications = NotificationSettings {
+                sound: false,
+                ..NotificationSettings::default()
+            };
+            state.settings().save(&settings).expect("save");
+
+            assert_eq!(state.interrupting().about(&arrived()), Some(false));
+        }
+
+        #[tokio::test]
+        async fn a_message_the_push_rules_wanted_no_sound_for_gets_none() {
+            let (_dir, state, _sink) = state();
+            let quiet = consort_matrix::Notification {
+                sound: false,
+                ..arrived()
+            };
+
+            assert_eq!(state.interrupting().about(&quiet), Some(false));
+        }
     }
 
     #[test]
