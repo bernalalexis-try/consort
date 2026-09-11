@@ -24,6 +24,10 @@ tokio = { workspace = true }
 # Room avatars cross the IPC boundary as data URLs, which is base64 by
 # definition. Already in the tree by way of the SDK.
 base64 = "0.22"
+# `Room::send_attachment` takes a `&mime::Mime`, so this is matrix-sdk's own
+# public API rather than a type this crate chose. Named here at the version the
+# SDK resolves, which cargo unifies with it rather than compiling twice.
+mime = "0.3"
 sha2 = "0.10"
 # Only for the store key in `store_key`, which has to be unguessable and so
 # cannot come from anything less than the operating system's CSPRNG. Already in

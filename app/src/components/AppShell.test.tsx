@@ -1,6 +1,6 @@
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 
 const audioDevices = vi.hoisted(() => vi.fn());
 const audioSettings = vi.hoisted(() => vi.fn());
@@ -16,6 +16,7 @@ const roomAvatar = vi.hoisted(() => vi.fn());
 // to whichever test happened to be running.
 const onTimeline = vi.hoisted(() => vi.fn());
 const onTyping = vi.hoisted(() => vi.fn());
+const onDropped = vi.hoisted(() => vi.fn());
 const timelineTyping = vi.hoisted(() => vi.fn());
 const onThread = vi.hoisted(() => vi.fn());
 const timelineOpen = vi.hoisted(() => vi.fn());
@@ -34,6 +35,7 @@ vi.mock("../lib/api", async (importOriginal) => ({
   logout,
   onTimeline,
   onTyping,
+  onDropped,
   timelineTyping,
   onThread,
   timelineOpen,
@@ -122,14 +124,14 @@ function shell({
   rooms?: Rooms;
   call?: Call;
   selfAudio?: SelfAudio;
-  onSignedOut?: ReturnType<typeof vi.fn>;
-  onJoinVoice?: ReturnType<typeof vi.fn>;
-  onLeaveVoice?: ReturnType<typeof vi.fn>;
-  onSetMuted?: ReturnType<typeof vi.fn>;
-  onSetDeafened?: ReturnType<typeof vi.fn>;
-  onSetAway?: ReturnType<typeof vi.fn>;
+  onSignedOut?: Mock<() => void>;
+  onJoinVoice?: Mock<(roomId: string) => void>;
+  onLeaveVoice?: Mock<() => void>;
+  onSetMuted?: Mock<(muted: boolean) => void>;
+  onSetDeafened?: Mock<(deafened: boolean) => void>;
+  onSetAway?: Mock<(away: boolean) => void>;
   callRefused?: CallRefused | null;
-  onDismissRefusal?: ReturnType<typeof vi.fn>;
+  onDismissRefusal?: Mock<() => void>;
 } = {}) {
   const { container } = render(
     <AppShell
@@ -169,6 +171,7 @@ describe("AppShell", () => {
     roomAvatar.mockReset().mockResolvedValue(null);
     onTimeline.mockReset().mockResolvedValue(() => {});
   onTyping.mockReset().mockResolvedValue(() => {});
+  onDropped.mockReset().mockResolvedValue(() => {});
   timelineTyping.mockReset().mockResolvedValue(undefined);
     onThread.mockReset().mockResolvedValue(() => {});
     timelineOpen.mockReset().mockResolvedValue(undefined);

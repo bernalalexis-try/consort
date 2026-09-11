@@ -137,6 +137,13 @@ pub struct AppState {
     /// any command, so the protocol handler reaches it the same way a command
     /// reaches everything else: through the managed state.
     media: Mutex<crate::media::Cache>,
+    /// The screenshot waiting in the composer, if somebody pasted one.
+    ///
+    /// Held rather than handed to the page, which would cost the bytes a
+    /// crossing there and a crossing back for something the page does nothing
+    /// with. One slot because the composer stages one attachment at a time, so
+    /// a second paste is the answer to the first having been abandoned.
+    pasted: Mutex<Option<Vec<u8>>>,
     store: SessionStore,
     /// Held for the duration of a login or a logout.
     ///
@@ -319,6 +326,7 @@ impl AppState {
         Self {
             client: RwLock::new(None),
             media: Mutex::new(crate::media::Cache::new()),
+            pasted: Mutex::new(None),
             store,
             auth_gate: Mutex::new(()),
             refresh_task: Mutex::new(None),
@@ -459,6 +467,18 @@ impl AppState {
         );
         self.events
             .emit(AppEvent::CallRefused(CallRefused { room_id, readiness }));
+    }
+
+    /// Say that files were dragged onto the window.
+    ///
+    /// Whatever was dropped that is not a file has already been dropped from
+    /// the list, so an empty one is a folder or a piece of text landing on the
+    /// window. Reported anyway rather than swallowed: the composer says one
+    /// sentence about what it will not send, and a drop that produced nothing
+    /// at all needs that sentence most.
+    pub fn files_dropped(&self, files: Vec<crate::attaching::Chosen>) {
+        tracing::debug!(count = files.len(), "files were dropped onto the window");
+        self.events.emit(AppEvent::Dropped(files));
     }
 
     /// Leave the voice channel, if this session is in one.
@@ -773,6 +793,25 @@ impl AppState {
         &self.media
     }
 
+    /// Keep a pasted screenshot until it is sent or replaced.
+    pub async fn hold_pasted(&self, bytes: Vec<u8>) {
+        *self.pasted.lock().await = Some(bytes);
+    }
+
+    /// The screenshot waiting to be sent, if there is one.
+    ///
+    /// A copy rather than the slot emptied, because a send that fails leaves
+    /// the attachment staged on purpose: the composer still draws it, and
+    /// pressing send again has to have something to send.
+    pub async fn pasted(&self) -> Option<Vec<u8>> {
+        self.pasted.lock().await.clone()
+    }
+
+    /// Let go of the screenshot, once it has been sent.
+    pub async fn forget_pasted(&self) {
+        *self.pasted.lock().await = None;
+    }
+
     /// Adopt a signed-in client, and start the background work that goes with
     /// one: persisting token rotations, and syncing.
     ///
@@ -919,6 +958,10 @@ impl AppState {
         // is the previous account's conversation, in full, sitting on a
         // retained channel waiting for the next webview to ask.
         self.close_room();
+
+        // And so does a screenshot somebody pasted and never sent, which is a
+        // picture of the previous account's screen.
+        self.forget_pasted().await;
 
         // Aborting the sync task means it never runs its own final report, so
         // the last thing the frontend heard was whatever the loop was doing
@@ -1098,6 +1141,44 @@ mod tests {
         (dir, AppState::new(store, settings, sink.clone()), sink)
     }
 
+    #[test]
+    fn a_drop_reaches_the_webview_with_the_files_in_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cat.png");
+        std::fs::write(&path, b"0123456789").unwrap();
+        let (_dir, state, sink) = state();
+
+        state.files_dropped(vec![crate::attaching::chosen(&path).unwrap()]);
+
+        let dropped = sink
+            .events()
+            .into_iter()
+            .find_map(|event| match event {
+                AppEvent::Dropped(files) => Some(files),
+                _ => None,
+            })
+            .expect("a drop is reported");
+        assert_eq!(dropped.len(), 1);
+        assert_eq!(dropped[0].name, "cat.png");
+        assert_eq!(dropped[0].size, 10);
+    }
+
+    #[test]
+    fn a_drop_of_nothing_sendable_is_still_reported() {
+        // A folder, or a piece of text landing on the window. The composer
+        // says one sentence about what it will not send, and a drop that
+        // produced nothing at all is the case that needs it most.
+        let (_dir, state, sink) = state();
+
+        state.files_dropped(Vec::new());
+
+        assert!(
+            sink.events()
+                .iter()
+                .any(|event| matches!(event, AppEvent::Dropped(files) if files.is_empty()))
+        );
+    }
+
     #[tokio::test]
     async fn a_fresh_state_has_no_client() {
         let (_dir, state, _sink) = state();
@@ -1179,6 +1260,17 @@ mod tests {
         let (_dir, state, _sink) = state();
         state.clear_client().await;
         assert!(!state.has_refresh_task().await);
+    }
+
+    #[tokio::test]
+    async fn signing_out_lets_go_of_a_screenshot_that_was_never_sent() {
+        // What it retains is a picture of the previous account's screen.
+        let (_dir, state, _sink) = state();
+        state.hold_pasted(b"\x89PNG\r\n\x1a\n".to_vec()).await;
+
+        state.clear_client().await;
+
+        assert!(state.pasted().await.is_none());
     }
 
     #[tokio::test]

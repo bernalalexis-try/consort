@@ -4078,6 +4078,341 @@ mod timeline {
             assert!(timeline::media(&client, HANDLE).await.is_err());
         }
     }
+
+    /// Putting one into a room, which is upload and send in a single call.
+    ///
+    /// Network shaped from end to end: the SDK asks what the homeserver will
+    /// take, uploads, and then sends an event naming what it uploaded. The
+    /// decisions worth pinning are all in what reaches the wire, and none of
+    /// them can be seen from a unit test.
+    mod sending_attachments {
+        use super::*;
+        use consort_matrix::timeline::Attaching;
+
+        /// A PNG header saying 640 by 480, with no pixels after it.
+        fn png() -> Vec<u8> {
+            let mut bytes = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+            bytes.extend_from_slice(&[0, 0, 0, 0x0D]);
+            bytes.extend_from_slice(b"IHDR");
+            bytes.extend_from_slice(&640u32.to_be_bytes());
+            bytes.extend_from_slice(&480u32.to_be_bytes());
+            bytes
+        }
+
+        /// A room that will take an upload, and say how large a one.
+        ///
+        /// Both media config endpoints, because which the SDK reaches for
+        /// depends on the versions the homeserver advertises and none of these
+        /// tests are about that choice. Plain rather than encrypted for the
+        /// reason the text sends are: a mock with no devices in it cannot
+        /// establish a megolm session, and whether the SDK encrypts is decided
+        /// from the room's own state and tested by the SDK.
+        async fn ready(server: &MatrixMockServer, client: &matrix_sdk::Client, limit: u32) {
+            server
+                .sync_joined_room(client, ruma::room_id!("!general:example.org"))
+                .await;
+            server
+                .mock_room_state_encryption()
+                .expect_any_access_token()
+                .plain()
+                .mount()
+                .await;
+            server
+                .mock_authenticated_media_config()
+                .expect_any_access_token()
+                .ok(limit.into())
+                .mount()
+                .await;
+            server
+                .mock_media_config()
+                .expect_any_access_token()
+                .ok(limit.into())
+                .mount()
+                .await;
+            server
+                .mock_upload()
+                .expect_any_access_token()
+                .ok(ruma::mxc_uri!("mxc://example.org/uploaded"))
+                .mount()
+                .await;
+        }
+
+        fn attaching(filename: &str, bytes: Vec<u8>) -> Attaching {
+            Attaching {
+                filename: filename.to_owned(),
+                bytes,
+                ..Attaching::default()
+            }
+        }
+
+        #[tokio::test]
+        async fn a_picture_arrives_as_a_picture_with_its_size_on_it() {
+            // The dimensions are the point. Without them a receiving room
+            // cannot hold the space before the bytes land, and every picture
+            // that loads shoves the conversation below it downwards.
+            let server = MatrixMockServer::new().await;
+            let (_dir, client) = signed_in(&server).await;
+            ready(&server, &client, 100_000_000).await;
+            server
+                .mock_room_send()
+                .expect_any_access_token()
+                .body_matches_partial_json(serde_json::json!({
+                    "msgtype": "m.image",
+                    "body": "cat.png",
+                    "url": "mxc://example.org/uploaded",
+                    "info": { "mimetype": "image/png", "w": 640, "h": 480, "size": 24 },
+                }))
+                .ok(ruma::event_id!("$sent:example.org"))
+                .expect(1)
+                .mount()
+                .await;
+
+            timeline::send_attachment(&client, ROOM, attaching("cat.png", png()))
+                .await
+                .unwrap();
+        }
+
+        #[tokio::test]
+        async fn what_it_is_comes_from_the_bytes_and_not_from_the_name() {
+            // A file somebody renamed is the ordinary case rather than a
+            // hostile one, and the extension is a guess. This one should
+            // arrive as the picture it is.
+            let server = MatrixMockServer::new().await;
+            let (_dir, client) = signed_in(&server).await;
+            ready(&server, &client, 100_000_000).await;
+            server
+                .mock_room_send()
+                .expect_any_access_token()
+                .body_matches_partial_json(serde_json::json!({
+                    "msgtype": "m.image",
+                    "info": { "mimetype": "image/png" },
+                }))
+                .ok(ruma::event_id!("$sent:example.org"))
+                .expect(1)
+                .mount()
+                .await;
+
+            timeline::send_attachment(&client, ROOM, attaching("holiday.mp4", png()))
+                .await
+                .unwrap();
+        }
+
+        #[tokio::test]
+        async fn a_voice_note_arrives_as_audio_rather_than_as_a_clip() {
+            // An m4a and an mp4 are the same container, so the sniffing order
+            // is what decides. Getting it wrong puts a black rectangle where a
+            // voice note should be.
+            let server = MatrixMockServer::new().await;
+            let (_dir, client) = signed_in(&server).await;
+            ready(&server, &client, 100_000_000).await;
+            server
+                .mock_room_send()
+                .expect_any_access_token()
+                .body_matches_partial_json(serde_json::json!({
+                    "msgtype": "m.audio",
+                    "info": { "mimetype": "audio/mp4" },
+                }))
+                .ok(ruma::event_id!("$sent:example.org"))
+                .expect(1)
+                .mount()
+                .await;
+
+            let m4a = b"\0\0\0\x20ftypM4A \0\0\x02\0".to_vec();
+            timeline::send_attachment(&client, ROOM, attaching("note.m4a", m4a))
+                .await
+                .unwrap();
+        }
+
+        #[tokio::test]
+        async fn anything_this_build_cannot_name_arrives_as_a_file() {
+            // A spreadsheet, which is a card that saves. Deliberately not a
+            // content type guessed from the extension: one this end invented
+            // is one a receiving client might act on.
+            let server = MatrixMockServer::new().await;
+            let (_dir, client) = signed_in(&server).await;
+            ready(&server, &client, 100_000_000).await;
+            server
+                .mock_room_send()
+                .expect_any_access_token()
+                .body_matches_partial_json(serde_json::json!({
+                    "msgtype": "m.file",
+                    "body": "totals.ods",
+                    "info": { "mimetype": "application/octet-stream" },
+                }))
+                .ok(ruma::event_id!("$sent:example.org"))
+                .expect(1)
+                .mount()
+                .await;
+
+            timeline::send_attachment(
+                &client,
+                ROOM,
+                attaching("totals.ods", b"PK\x03\x04".to_vec()),
+            )
+            .await
+            .unwrap();
+        }
+
+        #[tokio::test]
+        async fn a_caption_rides_on_the_same_event_as_the_picture() {
+            // One request rather than a picture followed by a message. The
+            // filename stays the filename, which is what stops a room drawing
+            // "screenshot.png" above the screenshot.
+            let server = MatrixMockServer::new().await;
+            let (_dir, client) = signed_in(&server).await;
+            ready(&server, &client, 100_000_000).await;
+            server
+                .mock_room_send()
+                .expect_any_access_token()
+                .body_matches_partial_json(serde_json::json!({
+                    "msgtype": "m.image",
+                    "filename": "cat.png",
+                    "body": "*look*",
+                    "format": "org.matrix.custom.html",
+                }))
+                .ok(ruma::event_id!("$sent:example.org"))
+                .expect(1)
+                .mount()
+                .await;
+
+            timeline::send_attachment(
+                &client,
+                ROOM,
+                Attaching {
+                    caption: Some("*look*".to_owned()),
+                    ..attaching("cat.png", png())
+                },
+            )
+            .await
+            .unwrap();
+        }
+
+        #[tokio::test]
+        async fn answering_somebody_with_a_picture_is_the_same_send() {
+            // The relation comes off `AttachmentConfig` rather than off a
+            // second send path, which is the whole reason there is one call
+            // here rather than two.
+            let server = MatrixMockServer::new().await;
+            let (_dir, client) = signed_in(&server).await;
+            ready(&server, &client, 100_000_000).await;
+            server
+                .mock_room_event()
+                .expect_any_access_token()
+                .ok(
+                    matrix_sdk::deserialized_responses::TimelineEvent::from_plaintext(
+                        raw(said("$said:example.org", "what does it look like", 1_000))
+                            .cast_unchecked(),
+                    ),
+                )
+                .mount()
+                .await;
+            server
+                .mock_room_send()
+                .expect_any_access_token()
+                .body_matches_partial_json(serde_json::json!({
+                    "msgtype": "m.image",
+                    "m.relates_to": { "m.in_reply_to": { "event_id": "$said:example.org" } },
+                    "m.mentions": { "user_ids": ["@ada:example.org"] },
+                }))
+                .ok(ruma::event_id!("$sent:example.org"))
+                .expect(1)
+                .mount()
+                .await;
+
+            timeline::send_attachment(
+                &client,
+                ROOM,
+                Attaching {
+                    reply_to: Some("$said:example.org".to_owned()),
+                    ..attaching("cat.png", png())
+                },
+            )
+            .await
+            .unwrap();
+        }
+
+        #[tokio::test]
+        async fn a_file_larger_than_the_homeserver_takes_is_refused_before_it_is_uploaded() {
+            // The whole point of asking first. Discovering it by a 413 costs
+            // however long the upload ran, and answers with a sentence that
+            // sends nobody anywhere.
+            let server = MatrixMockServer::new().await;
+            let (_dir, client) = signed_in(&server).await;
+            ready(&server, &client, 8).await;
+
+            let error = timeline::send_attachment(&client, ROOM, attaching("cat.png", png()))
+                .await
+                .unwrap_err();
+
+            assert!(
+                error.user_message().contains("homeserver accepts"),
+                "{}",
+                error.user_message()
+            );
+        }
+
+        #[tokio::test]
+        async fn a_room_this_account_is_not_in_is_refused_before_anything_is_read() {
+            let server = MatrixMockServer::new().await;
+            let (_dir, client) = signed_in(&server).await;
+
+            let error = timeline::send_attachment(
+                &client,
+                "!nowhere:example.org",
+                attaching("c.png", png()),
+            )
+            .await
+            .unwrap_err();
+
+            assert!(matches!(error, consort_matrix::Error::NoSuchRoom { .. }));
+        }
+
+        #[tokio::test]
+        async fn a_homeserver_that_will_not_say_what_it_takes_is_left_to_the_sdk() {
+            // The endpoint is optional and plenty of deployments answer it
+            // with an error. Refusing every attachment because a capability
+            // lookup failed would be this layer inventing a limit nobody set,
+            // so the SDK asks the same question a moment later and reports
+            // whatever it finds.
+            let server = MatrixMockServer::new().await;
+            let (_dir, client) = signed_in(&server).await;
+            server
+                .sync_joined_room(&client, ruma::room_id!("!general:example.org"))
+                .await;
+            server
+                .mock_room_state_encryption()
+                .expect_any_access_token()
+                .plain()
+                .mount()
+                .await;
+
+            let error = timeline::send_attachment(&client, ROOM, attaching("cat.png", png()))
+                .await
+                .unwrap_err();
+
+            assert!(
+                !error.user_message().contains("homeserver accepts"),
+                "the refusal came from here rather than from the SDK: {}",
+                error.user_message()
+            );
+        }
+
+        #[tokio::test]
+        async fn an_empty_file_is_not_an_attachment() {
+            // What picking a zero-byte file produces. Sending it puts a card
+            // in the room that downloads nothing.
+            let server = MatrixMockServer::new().await;
+            let (_dir, client) = signed_in(&server).await;
+            ready(&server, &client, 100_000_000).await;
+
+            let error =
+                timeline::send_attachment(&client, ROOM, attaching("empty.txt", Vec::new()))
+                    .await
+                    .unwrap_err();
+
+            assert!(matches!(error, consort_matrix::Error::EmptyMessage));
+        }
+    }
     /// Reading one thread out of a room.
     ///
     /// The whole of this is network shaped: a `/relations` page for the

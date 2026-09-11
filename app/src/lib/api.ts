@@ -1680,6 +1680,115 @@ export function timelineReply(
 }
 
 /**
+ * A file somebody chose, before anything has been read of it.
+ *
+ * Mirrors `crate::attaching::Chosen`. There are no bytes here on purpose:
+ * the picker and a drop both end in a path, the webview has no filesystem
+ * capability, and the read waits until send. `path` is Rust's own string and
+ * goes back unread, on the same terms as an attachment handle.
+ */
+export interface Chosen {
+  path: string;
+  /** The file's own name, which is what the room will call it. */
+  name: string;
+  /** How many bytes it is, for saying what is about to be sent. */
+  size: number;
+}
+
+/**
+ * Open the desktop's file picker, and say what was chosen.
+ *
+ * Resolves to `null` when the window was closed without choosing, which is not
+ * a failure and must not be drawn as one.
+ *
+ * A command rather than an `input type="file"`, for the reason Save As is one:
+ * the page has `core:default` and could not read what came back. Nothing is
+ * read yet either way. What arrives is a name and a length.
+ */
+export function pickAttachment(): Promise<Chosen | null> {
+  return invoke<Chosen | null>("attachment_pick");
+}
+
+/**
+ * Listen for files dragged onto the window.
+ *
+ * An event rather than something the page can watch for itself: Tauri handles
+ * the drop and the webview's own drop events are off, which is what stops a
+ * dropped file navigating the window away from Consort.
+ *
+ * Never replayed to a webview that reloaded. A drop is something somebody did
+ * once, and replaying it would put a file back in the composer after they had
+ * taken it out.
+ */
+export function onDropped(
+  handler: (files: Chosen[]) => void,
+): Promise<UnlistenFn> {
+  return listen<Chosen[]>("dropped", (event) => handler(event.payload));
+}
+
+/**
+ * Send a file the picker or a drop named, by its path.
+ *
+ * `caption` is whatever was in the message box, and it rides on the same event
+ * as the picture rather than following it as a second message. `replyTo` is
+ * the message being answered, when one is.
+ *
+ * The attachment appears when the sync brings it round, on the same terms as a
+ * message: there is no local echo.
+ */
+export function attachFile(
+  roomId: string,
+  path: string,
+  caption: string | null,
+  replyTo: string | null,
+): Promise<void> {
+  return invoke<void>("timeline_attach_file", {
+    roomId,
+    path,
+    caption,
+    replyTo,
+  });
+}
+
+/** A screenshot off the clipboard, waiting in the composer. */
+export interface Pasted {
+  /** What the room will call it, since a screenshot arrives without a name. */
+  name: string;
+  /** How many bytes the encoded picture is, for saying what is about to go. */
+  size: number;
+}
+
+/**
+ * Stage whatever picture is on the clipboard, and say whether there was one.
+ *
+ * Resolves to `null` when there is no picture to stage, which includes every
+ * ordinary paste of words: text on the clipboard means the paste belongs in
+ * the message box, and Rust answers with nothing so that it lands there.
+ *
+ * A command rather than a `paste` handler, and not for the usual capability
+ * reason alone. WebKitGTK hands the page no image at all, so a composer
+ * waiting on `clipboardData` waits forever, and reading the clipboard where
+ * the rest of this application already reads it works whatever has focus.
+ */
+export function pasteAttachment(): Promise<Pasted | null> {
+  return invoke<Pasted | null>("attachment_paste");
+}
+
+/**
+ * Send the screenshot `pasteAttachment` staged.
+ *
+ * No bytes and no name: Rust is holding the picture, and this says to send
+ * what it is holding, the way a picked file is sent by its path.
+ */
+export function attachPasted(
+  roomId: string,
+  caption: string | null,
+  replyTo: string | null,
+): Promise<void> {
+  return invoke<void>("timeline_attach_pasted", { roomId, caption, replyTo });
+}
+
+/**
  * Put one message's `matrix.to` address on the clipboard.
  *
  * A command rather than a clipboard call from here, because the webview has

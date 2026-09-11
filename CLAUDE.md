@@ -7,10 +7,10 @@ Guidance for Claude Code (claude.ai/code) working in this repository.
 Consort is a desktop Matrix chat client in Rust and Tauri, aimed at voice-first
 team chat. Today it does authentication, session verification (emoji and
 recovery key), room key backup, the room list, voice over MatrixRTC and
-LiveKit, reading and sending text in a room, attachments, threads, replies both
-sent and drawn, reactions, mentions, a typing indicator, and `matrix.to` links
-that go where they point. Sending an attachment and editing a message are not
-built.
+LiveKit, reading and sending text in a room, attachments both sent and drawn,
+threads, replies both sent and drawn, reactions, mentions, a typing indicator,
+and `matrix.to` links that go where they point. Editing a message is not built,
+and neither is upload progress or a thumbnail for a clip somebody sends.
 
 ## Layout
 
@@ -119,6 +119,41 @@ The Tauri capability set grants `core:default` only. No filesystem, no shell, no
 HTTP from the webview. Everything privileged goes through a Rust command. If a
 frontend change seems to need a new capability, that is a signal the logic
 belongs in Rust.
+
+### A paste carries no picture, so the clipboard is read in Rust
+
+`clipboardData.files` and `clipboardData.items` are both empty in WebKitGTK
+when what is on the clipboard is an image. A composer that waits for a `File`
+off a `paste` event waits forever, and it fails silently: the event fires, the
+handler runs, and there is simply nothing in it.
+
+Do not reach for `clipboardData` again. Ctrl+V is a `keydown` on the window,
+and `attachment_paste` reads the clipboard through
+`tauri-plugin-clipboard-manager`, where the picture is available and where
+nothing depends on what has focus. `attaching::Clipboard` is the trait that
+keeps the rule testable without a desktop.
+
+The rule itself: **text on the clipboard means there is no screenshot to
+stage.** A copy out of a spreadsheet carries both the words and a rendering of
+them, and staging the picture would lose what somebody meant to paste, so Rust
+reads text first and answers with nothing when it finds any. The keystroke is
+never `preventDefault`ed, which is what lets the words reach the box on their
+own. Reading text first is also what stops an ordinary paste pulling a
+full-screen RGBA buffer nobody asked for.
+
+Two things worth not rediscovering. The command is `async` so the read happens
+off the main thread: an X11 selection belongs to a process, and pasting a link
+copied out of Consort itself would otherwise have the window waiting on an
+answer only the window can give. And the picture never crosses the IPC. It is
+held in `AppState` and sent by asking for what is held, because a temp file has
+no honest owner to delete it and a plaintext screenshot left on disk by an
+end-to-end encrypted client is not a trade worth making.
+
+The bug behind all of this is WebKit 218519, five years of `Pasteboard::read()`
+not reading clipboard image buffers. It was fixed upstream in October 2025 and
+released in webkitgtk 2.51.1, but 2.52.6 still hands the page nothing here, so
+do not assume a version bump has made this section obsolete without pasting a
+screenshot into a dev build and watching it land.
 
 ### The IPC runs both ways now
 
@@ -246,6 +281,12 @@ rediscovering:
   registers an account of its own: two logins to a reused account produce two
   devices where neither holds the cross-signing private keys, so nothing can
   sign anything and the test passes only the first time.
+- **An upload needs the media config endpoint mocked.** `Room::send_attachment`
+  asks the homeserver how large an upload it takes before it sends anything, so
+  a `MatrixMockServer` test of the send path that mounts only `mock_upload` and
+  `mock_room_send` fails on a 404 that names neither. Mount
+  `mock_authenticated_media_config` and `mock_media_config` both: which one the
+  SDK reaches for depends on the versions the server advertises.
 - **Tauri commands are one-line delegates.** `State<'_, AppState>` only exists
   inside a running app, so logic written directly in a `#[tauri::command]` is
   logic no test can reach. Every command calls a plain `*_for(&AppState, ..)`

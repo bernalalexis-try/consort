@@ -8,6 +8,7 @@
 //! binary. Keeping that line sharp is what makes the interesting half testable
 //! without driving a webview.
 
+mod attaching;
 mod audio;
 mod call;
 mod commands;
@@ -167,8 +168,24 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            if let WindowEvent::CloseRequested { .. } = event {
-                tracing::info!(label = window.label(), "window closed");
+            match event {
+                WindowEvent::CloseRequested { .. } => {
+                    tracing::info!(label = window.label(), "window closed");
+                }
+                // A drop carries paths rather than bytes, so the read is
+                // Rust's, on the same terms as the picker. It arrives here
+                // rather than in the page because Tauri handles the drop
+                // itself: the webview's own drop events are turned off, which
+                // is what stops a dropped file navigating the window to it.
+                WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) => {
+                    window.state::<AppState>().files_dropped(
+                        paths
+                            .iter()
+                            .filter_map(|path| attaching::chosen(path))
+                            .collect(),
+                    );
+                }
+                _ => {}
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -199,6 +216,10 @@ pub fn run() {
             commands::direct_room,
             commands::timeline_copy_link,
             commands::timeline_media_save,
+            commands::attachment_pick,
+            commands::timeline_attach_file,
+            commands::attachment_paste,
+            commands::timeline_attach_pasted,
             commands::audio_devices,
             commands::audio_settings,
             commands::set_audio_settings,
