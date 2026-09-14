@@ -27,6 +27,7 @@ import {
   timelineEarlier,
   timelineGoTo,
   timelineLater,
+  timelineMarkRead,
   timelineOpen,
   timelinePresent,
   timelineReact,
@@ -41,7 +42,13 @@ import {
   type Participant,
   type Timeline,
 } from "../lib/api";
-import { MessageGroups, ReplyIcon, group, previewOf } from "./MessageGroups";
+import {
+  MessageGroups,
+  ReplyIcon,
+  firstUnread,
+  group,
+  previewOf,
+} from "./MessageGroups";
 import { PersonMenu } from "./PersonMenu";
 import { SidebarToggle } from "./SidebarToggle";
 import "./RoomTimeline.css";
@@ -242,6 +249,16 @@ export function RoomTimeline({
   const [nearTheTop, setNearTheTop] = useState(false);
   /** Whether the reader is near the bottom of what is loaded, on the same terms. */
   const [nearTheBottom, setNearTheBottom] = useState(false);
+  /*
+    Whether the reader is at the bottom, which is a stricter question than the
+    one above and is asked for a different reason. `nearTheBottom` decides when
+    to fetch the page below, where a screenful of slack is the point; this
+    decides when to tell the room something has been read, where it is not.
+
+    State as well as the ref below, because a receipt is sent when the answer
+    changes rather than when a render happens to notice.
+  */
+  const [atTheBottom, setAtTheBottom] = useState(false);
   /** Who is typing in this room, as Matrix user IDs, ours already removed. */
   const [typists, setTypists] = useState<string[]>([]);
 
@@ -283,6 +300,13 @@ export function RoomTimeline({
   */
   const wanted = useRef<string | null>(null);
   /*
+    Whether the room has already been opened at where reading stopped. Once
+    per room: the line stays drawn while the room is read, and a scroll to it
+    on every arriving timeline would drag somebody back to it every time
+    anybody said anything.
+  */
+  const landed = useRef(false);
+  /*
     The message a window has already been asked for, so that a link naming
     something unreachable asks once rather than on every timeline that arrives
     afterwards. Cleared when the jump lands, so the same message can be gone to
@@ -297,6 +321,26 @@ export function RoomTimeline({
   // changed. Drawing it would put the last room's conversation under this
   // room's name for a moment.
   const mine = timeline.roomId === channel.id;
+
+  /*
+    The first message that arrived after this account last read here, which is
+    what the line is drawn above and what the room opens at. Undefined for a
+    room with nothing new in it, and inside a window somebody jumped into: the
+    marker describes the live end, and drawing it against a window from last
+    March would put "new messages" in the middle of a conversation nobody has
+    just arrived at.
+
+    Declared up here rather than beside the other derived values below,
+    because the layout effect that opens the room at it names it in its
+    dependencies and those are read while this is still rendering.
+  */
+  const newFrom = useMemo(
+    () =>
+      mine && timeline.focus === undefined
+        ? firstUnread(timeline.messages, timeline.readUpTo)
+        : undefined,
+    [mine, timeline.messages, timeline.readUpTo, timeline.focus],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -520,6 +564,7 @@ export function RoomTimeline({
     if (box === null) return;
     const below = box.scrollHeight - box.scrollTop - box.clientHeight;
     following.current = below < AT_THE_BOTTOM;
+    setAtTheBottom(below < AT_THE_BOTTOM);
     fromBottom.current = box.scrollHeight - box.scrollTop;
     setNearTheTop(box.scrollTop < NEAR_THE_TOP);
     // The same distance at the other end, and for the same reason. Only ever
@@ -540,6 +585,8 @@ export function RoomTimeline({
     // A jump into the room before this one is not one to carry into this one.
     wanted.current = null;
     asked.current = null;
+    // Nor is having already opened it at where reading stopped.
+    landed.current = false;
   }, [channel.id]);
 
   /*
@@ -566,6 +613,36 @@ export function RoomTimeline({
     const older = oldest.current !== undefined && first !== oldest.current;
     oldest.current = first;
 
+    /*
+      Open the room where reading stopped, rather than at the bottom.
+
+      The third starting position, and the only one that is not about
+      following: the other two keep somebody where they were, and this puts
+      them where they left off. Before the two below because it replaces them,
+      and only ever once per room.
+
+      A room with nothing new in it, or whose marker names something outside
+      the loaded window, has no line to land on and falls through to the
+      bottom, which is the right answer for both.
+    */
+    if (!landed.current && newFrom !== undefined) {
+      const line = box.querySelector(
+        `[data-message-id="${CSS.escape(newFrom)}"]`,
+      );
+      if (line instanceof HTMLElement) {
+        landed.current = true;
+        line.scrollIntoView({ block: "center" });
+        /*
+          Measured after the scroll rather than asserted before it. Whether the
+          room should follow the bottom from here is a question about where the
+          landing actually left the reader, and in a room short enough that the
+          line is on the last screen the answer is yes.
+        */
+        measure();
+        return;
+      }
+    }
+
     if (following.current) {
       box.scrollTop = box.scrollHeight;
     } else if (older) {
@@ -579,7 +656,7 @@ export function RoomTimeline({
     // Also what covers a room short enough that nothing can be scrolled: the
     // ask below would otherwise wait for a scroll event that cannot happen.
     measure();
-  }, [timeline.messages, timeline.roomId, measure]);
+  }, [timeline.messages, timeline.roomId, newFrom, measure]);
 
   /*
     Stay at the bottom while the list is still growing.
@@ -639,6 +716,53 @@ export function RoomTimeline({
     }
     void timelineLater().catch(() => {});
   }, [mine, nearTheBottom, timeline.moreAfter, timeline.loadingAfter]);
+
+  /*
+    Say what has been read, whenever the reader is at the bottom of the room.
+
+    The rule is deliberately the strict one: at the bottom of the live end,
+    everything loaded has been seen. The looser one, the newest message with
+    any part of it on screen, would need a measurement per row on every scroll
+    and would sometimes claim a message that is half off the bottom edge. This
+    one can only ever under-claim, which is the safe direction for something
+    that cannot be taken back once it has gone out publicly.
+
+    Never inside a window somebody jumped into. Those messages are old, and a
+    receipt naming one would move this account's marker backwards and make
+    every unread count on the server jump.
+
+    Not throttled here. Rust drops an ask naming the message it last sent, so a
+    reader sitting still in a quiet room sends one receipt however many times
+    this fires.
+  */
+  useEffect(() => {
+    if (!mine || !atTheBottom || timeline.focus !== undefined) return;
+
+    /*
+      Asked of the box rather than taken from the state above, which is a
+      measurement from before this render's layout effects ran. Opening a room
+      at the line moves the scroll during those, so the state can still say
+      "at the bottom" about a position the reader has already been moved away
+      from, and a receipt sent on that would mark a busy room read the moment
+      it was opened, which is the one thing this whole feature exists to stop.
+    */
+    const box = scroller.current;
+    if (
+      box === null ||
+      box.scrollHeight - box.scrollTop - box.clientHeight >= AT_THE_BOTTOM
+    ) {
+      return;
+    }
+
+    const newest = timeline.messages.at(-1)?.id;
+    if (newest === undefined) return;
+
+    void timelineMarkRead(newest).catch(() => {
+      // The watcher has gone, which is what a scroll landing at the same
+      // moment as a room change is. Nothing to say about a receipt that was
+      // for a room nobody is reading any more.
+    });
+  }, [mine, atTheBottom, timeline.focus, timeline.messages]);
 
   // Recorded rather than acted on, so that a press arriving before the room has
   // any messages is not lost. The effect below is what spends it.
@@ -959,6 +1083,7 @@ export function RoomTimeline({
           copiedId={copied}
           onReply={reply}
           onCopyLink={copyLink}
+          newFrom={newFrom}
           onOpenThread={(rootId) => {
             setOpening(rootId);
             // Cleared here as well as on the channel, because a command that

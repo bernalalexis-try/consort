@@ -61,10 +61,11 @@ pub(crate) fn assemble(facts: Vec<RoomFacts>) -> Rooms {
 /// The rooms belonging to no joined space.
 ///
 /// Ordered by name, because there is nothing else to order them by. A space
-/// arranges its children with `m.space.child`; nothing arranges these, and the
-/// obvious alternative, most recent activity, needs the read receipts that
-/// this milestone does not have. Name ordering is at least the same every
-/// launch, which is what stops the list moving under the pointer.
+/// arranges its children with `m.space.child` and nothing arranges these. The
+/// obvious alternative is most recent activity, and it is deliberately not
+/// this: a list that reorders itself whenever somebody says something moves
+/// the channel being aimed at out from under the pointer. Name ordering is at
+/// least the same every launch.
 fn home_channels(rooms: &[RoomFacts], claimed: &HashSet<&str>) -> Vec<Channel> {
     let mut orphans: Vec<&RoomFacts> = rooms
         .iter()
@@ -111,6 +112,10 @@ fn channels_of(
                 // whose state it cannot read, so an empty list is not a guess,
                 // it is the only honest answer.
                 participants: Vec::new(),
+                // And the same for what is waiting in it. Nothing has arrived
+                // in a room this account is not in.
+                unread: 0,
+                mentions: 0,
             },
         })
         .collect()
@@ -173,6 +178,8 @@ fn joined_channel(room: &RoomFacts) -> Channel {
         avatar: room.avatar.clone(),
         joined: true,
         participants: room.participants.clone(),
+        unread: room.unread,
+        mentions: room.mentions,
     }
 }
 
@@ -190,6 +197,8 @@ mod tests {
             kind: RoomKind::Text,
             children: Vec::new(),
             participants: Vec::new(),
+            unread: 0,
+            mentions: 0,
         }
     }
 
@@ -590,6 +599,33 @@ mod tests {
                 rooms.spaces[1].channels[0].participants,
                 [person("@a:example.org", "Ada")]
             );
+        }
+
+        #[test]
+        fn a_joined_channel_carries_what_is_waiting_in_it() {
+            let rooms = assemble(vec![RoomFacts {
+                unread: 7,
+                mentions: 1,
+                ..room("!g:example.org", "general")
+            }]);
+
+            let channel = &rooms.spaces[0].channels[0];
+            assert_eq!(channel.unread, 7);
+            assert_eq!(channel.mentions, 1);
+        }
+
+        #[test]
+        fn a_channel_nobody_joined_has_nothing_waiting_in_it() {
+            // Not a claim that it has been read. We are not in the room, so
+            // there is nothing to count and no receipt to count it against.
+            let rooms = assemble(vec![space(
+                "!s:example.org",
+                "Kahu HQ",
+                vec![child("!never:example.org")],
+            )]);
+
+            assert_eq!(rooms.spaces[1].channels[0].unread, 0);
+            assert_eq!(rooms.spaces[1].channels[0].mentions, 0);
         }
 
         #[test]

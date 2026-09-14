@@ -11,10 +11,10 @@ at whatever homeserver you already run.
 [Screenshot of the main window in a text room Here]
 
 > **Status: early.** It signs you in and keeps you signed in, verifies itself,
-> draws your rooms, joins voice channels, reads and writes text, threads,
-> replies, reactions and attachments, sending included, and tells you when
-> something arrives while you are looking at something else. Editing a message
-> is not built.
+> draws your rooms, joins voice channels, and reads and writes text, threads,
+> replies, reactions and attachments, sending included. It marks what you have
+> not read, remembers where you stopped, and tells you when something arrives
+> while you are looking at something else. Editing a message is not built.
 
 ---
 
@@ -56,6 +56,11 @@ at whatever homeserver you already run.
   own address on the clipboard.
 - **Reactions.** Twelve keys to pick from, and any key anybody else sends draws
   correctly. Custom emoji from other clients are shown.
+- **What you have not read.** A channel with something waiting in it is drawn
+  in white, a channel where somebody said your name carries a count, and a room
+  you come back to opens where you left off with a line across it. Read
+  receipts go out publicly by default, the way every other Matrix client sends
+  them; Settings has a switch that keeps them to your own account instead.
 - **Notifications.** A desktop notification when Consort is not the window you
   are looking at, or when it is and you are reading a different channel.
   Clicking one brings the window forward and opens the channel it was about.
@@ -185,8 +190,9 @@ resource here. The full standard, and what gets a change sent back, is in
 | Voice over MatrixRTC and LiveKit, with device settings | working |
 | Text, attachments, threads, replies, reactions, mentions | working |
 | Sending attachments, by picker, drag or paste | working |
+| Read receipts, unread channels, where reading stopped | working |
 | Desktop notifications, honouring your push rules | working |
-| Editing, read receipts, upload progress, video thumbnails | planned |
+| Editing, upload progress, video thumbnails | planned |
 | Signed and notarised builds for Windows and macOS | someday |
 
 "Working" means doing real work in that row, not that the row is finished.

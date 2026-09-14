@@ -82,6 +82,20 @@ pub struct Timeline {
     /// reader is at the bottom waiting for the opposite page.
     #[serde(default)]
     pub loading_after: bool,
+    /// The last message this account had read when the room was opened.
+    ///
+    /// What the line across the conversation is drawn under: everything after
+    /// this is new since the last visit. Read from the `m.fully_read` marker
+    /// once, when the watcher starts, and then held for as long as the room
+    /// stays open. Held rather than followed on purpose, because reading the
+    /// room moves the marker: a value that tracked it would take the line away
+    /// the moment somebody looked at what it was pointing out.
+    ///
+    /// `None` for a room this account has never read in any client, and for
+    /// one whose marker names something not in the loaded window. Both mean
+    /// the same thing to a reader: no line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_up_to: Option<String>,
 }
 
 /// One thread as it is currently loaded, oldest reply first.

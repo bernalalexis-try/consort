@@ -23,6 +23,7 @@ use tauri::State;
 use crate::attaching;
 use crate::audio::Backends;
 use crate::notify::NotificationSettings;
+use crate::settings::PrivacySettings;
 use crate::state::{AppState, CallAudio};
 
 /// An error in the shape the frontend consumes.
@@ -524,6 +525,41 @@ pub async fn timeline_typing_for(
     let client = signed_in_client(state).await?;
     timeline::typing(&client, &room_id, typing).await?;
     Ok(())
+}
+
+/// Say that everything up to `event_id` in the open room has been read.
+///
+/// Safe to call as often as a scroll does. The room's watcher drops an ask
+/// naming the message it last sent, so a reader sitting still in a quiet room
+/// sends one receipt and then nothing.
+///
+/// Infallible on purpose, and it is not that nothing can go wrong. A receipt
+/// for a room nobody has open goes nowhere, and one the homeserver refuses is
+/// logged where the watcher sends it. Neither is something to put in front of
+/// somebody: the room is still drawn either way, and the count settles on the
+/// next message that arrives.
+fn timeline_mark_read_for(state: &AppState, event_id: String) {
+    state.mark_read(event_id);
+}
+
+/// What this account tells other people about itself.
+fn privacy_settings_for(state: &AppState) -> PrivacySettings {
+    state.settings().load().privacy
+}
+
+/// Replace it.
+///
+/// Nothing is re-sent for what has already been read. A public receipt cannot
+/// be taken back, so turning the setting off stops the next one rather than
+/// undoing the last, and turning it on does not retrospectively announce
+/// anything: both take effect at the next message somebody reads.
+fn set_privacy_settings_for(
+    state: &AppState,
+    privacy: PrivacySettings,
+) -> Result<(), crate::settings::SettingsError> {
+    let mut settings = state.settings().load();
+    settings.privacy = privacy;
+    state.settings().save(&settings)
 }
 
 /// When to interrupt somebody, and how loudly.
@@ -1448,6 +1484,28 @@ pub async fn timeline_unreact(
     timeline_unreact_for(&state, room_id, reaction_id).await
 }
 
+/// See `timeline_mark_read_for`.
+#[tauri::command]
+pub fn timeline_mark_read(state: State<'_, AppState>, event_id: String) {
+    timeline_mark_read_for(&state, event_id);
+}
+
+/// See `privacy_settings_for`.
+#[tauri::command]
+pub fn privacy_settings(state: State<'_, AppState>) -> PrivacySettings {
+    privacy_settings_for(&state)
+}
+
+/// See `set_privacy_settings_for`.
+#[tauri::command]
+pub fn set_privacy_settings(
+    state: State<'_, AppState>,
+    privacy: PrivacySettings,
+) -> Result<(), CommandError> {
+    set_privacy_settings_for(&state, privacy)?;
+    Ok(())
+}
+
 /// See `notification_settings_for`.
 #[tauri::command]
 pub fn notification_settings(state: State<'_, AppState>) -> NotificationSettings {
@@ -2084,6 +2142,57 @@ mod tests {
         }
 
         #[test]
+        fn receipts_are_public_until_somebody_says_otherwise() {
+            // The default the room is entitled to. A client that quietly told
+            // nobody it had read anything would make every other person in
+            // the room wrong about their own messages.
+            let (_dir, state, _) = state();
+
+            assert!(privacy_settings_for(&state).public_read_receipts);
+        }
+
+        #[test]
+        fn turning_public_receipts_off_is_what_loads_back() {
+            let (_dir, state, _) = state();
+
+            set_privacy_settings_for(
+                &state,
+                PrivacySettings {
+                    public_read_receipts: false,
+                },
+            )
+            .expect("save");
+
+            assert!(!privacy_settings_for(&state).public_read_receipts);
+        }
+
+        #[test]
+        fn saving_privacy_leaves_the_audio_section_alone() {
+            // The two screens are separate and neither holds the other's
+            // fields, so a write from one that took the whole file with it
+            // would silently undo the other.
+            let (_dir, state, _) = state();
+            set_audio_settings_for(
+                &state,
+                AudioSettings {
+                    input: Some("Yeti".to_owned()),
+                    ..AudioSettings::default()
+                },
+            )
+            .expect("save");
+
+            set_privacy_settings_for(
+                &state,
+                PrivacySettings {
+                    public_read_receipts: false,
+                },
+            )
+            .expect("save");
+
+            assert_eq!(audio_settings_for(&state).input.as_deref(), Some("Yeti"));
+        }
+
+        #[test]
         fn notifications_are_on_until_somebody_says_otherwise() {
             let (_dir, state, _) = state();
 
@@ -2135,6 +2244,16 @@ mod tests {
         }
 
         #[test]
+        fn marking_a_message_read_with_no_room_open_does_nothing() {
+            // What a scroll landing at the same moment as a room change is.
+            // There is no watcher to answer it, and inventing one would send
+            // a receipt for a room nobody is reading.
+            let (_dir, state, _) = state();
+
+            timeline_mark_read_for(&state, "$said:example.org".to_owned());
+        }
+
+        #[test]
         fn saving_audio_settings_leaves_the_rest_of_the_file_alone() {
             // One section of one file. The call settings are hand-written, so
             // a microphone change that wiped them would take somebody's
@@ -2147,6 +2266,7 @@ mod tests {
                     fallback_dialect: consort_call::Dialect::State,
                     service_url_fallback: Some("https://example.org/sfu".to_owned()),
                 },
+                privacy: crate::settings::PrivacySettings::default(),
                 notifications: NotificationSettings::default(),
             };
             state.settings().save(&stored).expect("save");

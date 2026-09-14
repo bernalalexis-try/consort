@@ -75,6 +75,10 @@ pub(crate) struct RoomFacts {
     pub(crate) children: Vec<ChildFacts>,
     /// Who is connected to the call. Empty unless this is a voice channel.
     pub(crate) participants: Vec<Participant>,
+    /// How many messages have arrived since this account last read one here.
+    pub(crate) unread: u64,
+    /// How many of those were about this account.
+    pub(crate) mentions: u64,
 }
 
 /// One `m.space.child` event, reduced to what the ordering needs.
@@ -133,6 +137,12 @@ pub(crate) async fn extract(room: &Room) -> RoomFacts {
             RoomKind::Voice => participants_of(room).await,
             RoomKind::Space | RoomKind::Text => Vec::new(),
         },
+        // Two reads of a lock the SDK already holds the answer behind. The
+        // counting itself happened when the events arrived, in the event
+        // cache `crate::receipts::count_unread` subscribes; nothing is
+        // recounted here, and without that subscription both are zero.
+        unread: room.num_unread_messages(),
+        mentions: room.num_unread_mentions(),
     }
 }
 

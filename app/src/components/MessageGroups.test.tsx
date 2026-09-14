@@ -10,7 +10,7 @@ vi.mock("../lib/api", async (importOriginal) => ({
   memberProfile,
 }));
 
-import { MessageGroups, group } from "./MessageGroups";
+import { MessageGroups, firstUnread, group } from "./MessageGroups";
 import { resetAvatarCache } from "../lib/avatars";
 import { resetPresenceCache } from "../lib/presence";
 import type { Message } from "../lib/api";
@@ -165,6 +165,93 @@ describe("grouping", () => {
 
   it("groups nothing out of nothing", () => {
     expect(group([])).toEqual([]);
+  });
+});
+
+describe("where reading stopped", () => {
+  const conversation = [
+    said("$1", ADA, "one"),
+    said("$2", BOB, "two", NOON + 1_000),
+    said("$3", ADA, "three", NOON + 2_000),
+  ];
+
+  it("names the message after the one that was read", () => {
+    expect(firstUnread(conversation, "$1")).toBe("$2");
+  });
+
+  it("names nothing when the last message read is the newest one", () => {
+    // Nothing new to point at. A line drawn anyway would sit below the end of
+    // the conversation.
+    expect(firstUnread(conversation, "$3")).toBeUndefined();
+  });
+
+  it("names nothing when the marker is outside what is loaded", () => {
+    // A room somebody read a year ago and has not opened since. The marker is
+    // real; the message it names is not on screen, and a line drawn anyway
+    // would sit above the whole window.
+    expect(firstUnread(conversation, "$last-year")).toBeUndefined();
+  });
+
+  it("names nothing for a room this account has never read", () => {
+    expect(firstUnread(conversation, undefined)).toBeUndefined();
+  });
+
+  it("names nothing in an empty room", () => {
+    expect(firstUnread([], "$1")).toBeUndefined();
+  });
+
+  it("draws the line above the first message that is new", () => {
+    render(
+      <MessageGroups
+        groups={group(conversation)}
+        names={{ [ADA]: "Ada", [BOB]: "Bob" }}
+        roomId={GENERAL}
+        selfId={BOB}
+        known={known(conversation)}
+        onAbout={vi.fn()}
+        newFrom="$2"
+      />,
+    );
+
+    expect(screen.getByText("New messages")).toBeInTheDocument();
+  });
+
+  it("draws one line, not one per group it could fall between", () => {
+    // A group is one person talking without pause, so the last thing read and
+    // the first thing new are regularly two messages inside one of them. Both
+    // the group check and the message check have to be able to draw it, and
+    // exactly one of them may.
+    render(
+      <MessageGroups
+        groups={group([
+          said("$1", ADA, "one"),
+          said("$2", ADA, "two", NOON + 1_000),
+        ])}
+        names={{ [ADA]: "Ada" }}
+        roomId={GENERAL}
+        selfId={BOB}
+        known={known(conversation)}
+        onAbout={vi.fn()}
+        newFrom="$2"
+      />,
+    );
+
+    expect(screen.getAllByText("New messages")).toHaveLength(1);
+  });
+
+  it("draws no line when nothing is new", () => {
+    render(
+      <MessageGroups
+        groups={group(conversation)}
+        names={{ [ADA]: "Ada", [BOB]: "Bob" }}
+        roomId={GENERAL}
+        selfId={BOB}
+        known={known(conversation)}
+        onAbout={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByText("New messages")).not.toBeInTheDocument();
   });
 });
 

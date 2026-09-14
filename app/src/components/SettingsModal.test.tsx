@@ -8,6 +8,8 @@ const audioTestStart = vi.hoisted(() => vi.fn());
 const audioTestStop = vi.hoisted(() => vi.fn());
 const onAudio = vi.hoisted(() => vi.fn());
 const logout = vi.hoisted(() => vi.fn());
+const privacySettings = vi.hoisted(() => vi.fn());
+const setPrivacySettings = vi.hoisted(() => vi.fn());
 const notificationSettings = vi.hoisted(() => vi.fn());
 const setNotificationSettings = vi.hoisted(() => vi.fn());
 
@@ -19,6 +21,8 @@ vi.mock("../lib/api", async (importOriginal) => ({
   audioTestStop,
   onAudio,
   logout,
+  privacySettings,
+  setPrivacySettings,
   notificationSettings,
   setNotificationSettings,
 }));
@@ -79,6 +83,8 @@ describe("SettingsModal", () => {
     audioTestStop.mockReset().mockResolvedValue(undefined);
     onAudio.mockReset().mockResolvedValue(() => {});
     logout.mockReset().mockResolvedValue(undefined);
+    privacySettings.mockReset().mockResolvedValue({ publicReadReceipts: true });
+    setPrivacySettings.mockReset().mockResolvedValue(undefined);
     notificationSettings.mockReset().mockResolvedValue({
       enabled: true,
       mentionsOnly: false,
@@ -210,10 +216,24 @@ describe("SettingsModal", () => {
     expect(await screen.findByText("@ada:example.org")).toBeVisible();
   });
 
+  it("goes to Privacy when asked", async () => {
+    open();
+
+    await userEvent.click(screen.getByRole("button", { name: /privacy/i }));
+
+    expect(
+      await screen.findByRole("switch", {
+        name: "Let people see when you have read their messages",
+      }),
+    ).toBeVisible();
+  });
+
   it("goes to Notifications when asked", async () => {
     open();
 
-    await userEvent.click(screen.getByRole("button", { name: /notifications/i }));
+    await userEvent.click(
+      screen.getByRole("button", { name: /notifications/i }),
+    );
 
     expect(
       await screen.findByRole("switch", {

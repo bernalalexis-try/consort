@@ -39,7 +39,43 @@ const UNIQUE: &str = "settings";
 pub struct Settings {
     pub audio: AudioSettings,
     pub calls: CallSettings,
+    pub privacy: PrivacySettings,
     pub notifications: NotificationSettings,
+}
+
+/// What this account tells other people about itself.
+///
+/// One field so far, and a section of its own rather than a loose flag, because
+/// everything that belongs here is the same kind of question: what leaves this
+/// machine that nobody asked for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct PrivacySettings {
+    /// Whether a read receipt is the public one.
+    ///
+    /// True sends `m.read`, which everybody in the room can see and which
+    /// cannot be taken back: it is what makes the read markers in Element and
+    /// every other client correct about this account, and it is what tells the
+    /// room when this account was looking. False sends `m.read.private`, which
+    /// resets the unread counts here and tells nobody.
+    ///
+    /// True by default. The alternative is a client that silently makes every
+    /// other person in the room wrong about whether their message was seen,
+    /// which is not a courtesy, and the switch is there for anybody who would
+    /// rather not be observed.
+    ///
+    /// The marker behind the "new messages" line is unaffected either way. It
+    /// is room account data rather than a receipt and is private in both
+    /// directions; see `consort_matrix::receipts`.
+    pub public_read_receipts: bool,
+}
+
+impl Default for PrivacySettings {
+    fn default() -> Self {
+        Self {
+            public_read_receipts: true,
+        }
+    }
 }
 
 /// The two things about voice calls that a deployment can get wrong.
@@ -199,6 +235,7 @@ mod tests {
                 ..AudioSettings::default()
             },
             calls: CallSettings::default(),
+            privacy: PrivacySettings::default(),
             notifications: NotificationSettings::default(),
         }
     }
@@ -253,6 +290,38 @@ mod tests {
         assert_eq!(store.load(), chosen);
         let raw = std::fs::read_to_string(store.path()).expect("read");
         assert!(raw.contains("\"fallbackDialect\": \"sticky\""), "{raw}");
+    }
+
+    #[test]
+    fn a_settings_file_written_before_privacy_existed_still_loads() {
+        // And loads with receipts public, which is what every build before
+        // this one did. A default of false would quietly stop an existing
+        // account telling its rooms anything, without anybody choosing that.
+        let (_dir, store) = store();
+        std::fs::write(store.path(), br#"{"audio":{"input":"Yeti"}}"#).expect("write");
+
+        let loaded = store.load();
+
+        assert_eq!(loaded.audio.input.as_deref(), Some("Yeti"));
+        assert!(loaded.privacy.public_read_receipts);
+    }
+
+    #[test]
+    fn turning_public_receipts_off_survives_a_round_trip() {
+        // The one field, and the one that matters: a choice about being
+        // watched that came back wrong after a restart would be the setting
+        // failing at the only thing it does.
+        let (_dir, store) = store();
+        let chosen = Settings {
+            privacy: PrivacySettings {
+                public_read_receipts: false,
+            },
+            ..Settings::default()
+        };
+
+        store.save(&chosen).expect("save");
+
+        assert!(!store.load().privacy.public_read_receipts);
     }
 
     #[test]

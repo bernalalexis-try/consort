@@ -24,7 +24,16 @@ import type { Call, Channel, Participant, Space } from "../lib/api";
 import { resetAvatarCache } from "../lib/avatars";
 
 function text(id: string, name: string | null, joined = true): Channel {
-  return { id, name, kind: "text", avatar: null, joined, participants: [] };
+  return {
+    id,
+    name,
+    kind: "text",
+    avatar: null,
+    joined,
+    participants: [],
+    unread: 0,
+    mentions: 0,
+  };
 }
 
 function voice(
@@ -40,6 +49,8 @@ function voice(
     avatar: null,
     joined,
     participants,
+    unread: 0,
+    mentions: 0,
   };
 }
 
@@ -101,6 +112,73 @@ describe("ChannelList", () => {
     // the menu, because any click on a name reaches it.
     audioSettings.mockReset().mockResolvedValue(SETTINGS);
     setPersonVolume.mockReset().mockResolvedValue(undefined);
+  });
+
+  /** Render one space's channels, with the props every test shares. */
+  function list(channels: Channel[]) {
+    render(
+      <ChannelList
+        selfId="@bob:example.org"
+        onOpenRoom={vi.fn()}
+        onFold={vi.fn()}
+        space={space(channels)}
+        selectedId={null}
+        call={IDLE}
+        onSelect={vi.fn()}
+      />,
+    );
+  }
+
+  it("marks a channel with something waiting in it", () => {
+    list([{ ...text("!a:example.org", "general"), unread: 4 }]);
+
+    expect(
+      screen.getByRole("button", { name: /general/ }),
+    ).toHaveAttribute("data-unread", "true");
+  });
+
+  it("leaves a channel that has been read unmarked", () => {
+    list([text("!a:example.org", "general")]);
+
+    expect(
+      screen.getByRole("button", { name: /general/ }),
+    ).toHaveAttribute("data-unread", "false");
+  });
+
+  it("draws no number for unread messages, only for mentions", () => {
+    // What somebody does about forty unread messages and about four is open
+    // the channel. A list of numbers is a list somebody has to read.
+    list([{ ...text("!a:example.org", "general"), unread: 40 }]);
+
+    expect(screen.queryByText("40")).not.toBeInTheDocument();
+  });
+
+  it("counts the times somebody said your name", () => {
+    list([{ ...text("!a:example.org", "general"), unread: 9, mentions: 3 }]);
+
+    expect(
+      screen.getByLabelText("3 mentions in general"),
+    ).toHaveTextContent("3");
+  });
+
+  it("says one mention in the singular", () => {
+    list([{ ...text("!a:example.org", "general"), unread: 1, mentions: 1 }]);
+
+    expect(screen.getByLabelText("1 mention in general")).toBeInTheDocument();
+  });
+
+  it("stops counting mentions past the point the number stops helping", () => {
+    // Past this the number is width rather than information, and a badge that
+    // grew to four digits would push the channel name off the row.
+    list([{ ...text("!a:example.org", "general"), unread: 300, mentions: 214 }]);
+
+    expect(screen.getByText("99+")).toBeInTheDocument();
+  });
+
+  it("draws no badge on a channel nobody has been named in", () => {
+    list([{ ...text("!a:example.org", "general"), unread: 4 }]);
+
+    expect(screen.queryByText("4")).not.toBeInTheDocument();
   });
 
   it("names the space at the top", () => {

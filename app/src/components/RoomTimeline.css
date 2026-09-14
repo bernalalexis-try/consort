@@ -1340,3 +1340,56 @@
   outline: none;
   box-shadow: var(--shadow-focus);
 }
+
+/*
+  Where this account stopped reading.
+
+  A rule the width of the column with the words sitting on it, drawn in the
+  danger red rather than the gold beside it: gold is a mention, and a line that
+  used the same colour would read as somebody having said your name at that
+  point rather than as a place in the conversation.
+
+  Full bleed across the message column and not indented to the text, because
+  the thing it separates is everything above from everything below and a rule
+  that started at the words would look like it belonged to one message.
+
+  The words sit in the rule rather than beside it, which is what keeps it
+  legible at a glance in a room that is otherwise all text: a bare line is a
+  divider and reads as the start of a day.
+*/
+.timeline__unread {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: var(--space-3) 0;
+  color: var(--danger);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.timeline__unread::before,
+.timeline__unread::after {
+  content: "";
+  height: 1px;
+  background: var(--danger);
+}
+
+/*
+  The rule runs the whole way on the right and only a little way on the left,
+  so the words read as a label on the conversation below rather than as a
+  heading centred over nothing.
+*/
+.timeline__unread::before {
+  width: var(--space-4);
+  flex: none;
+}
+
+.timeline__unread::after {
+  flex: 1;
+}
+
+.timeline__unread-said {
+  flex: none;
+}

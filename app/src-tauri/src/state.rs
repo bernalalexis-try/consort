@@ -865,6 +865,23 @@ impl AppState {
         }
     }
 
+    /// Say that everything up to `event_id` in the open room has been read.
+    ///
+    /// The setting is read here, on every call, rather than held: somebody who
+    /// turns public receipts off with a room open has turned them off, and a
+    /// value captured when the room opened would keep publishing for as long
+    /// as they stayed in it.
+    ///
+    /// A no-op when no room is open, which is what a scroll landing at the
+    /// same moment as a room change is, and which is also the cancellation the
+    /// receipt needs: no receipt goes out for a room nobody is reading.
+    pub fn mark_read(&self, event_id: String) {
+        let public = self.settings().load().privacy.public_read_receipts;
+        if let Some(watch) = self.locked_timeline().as_ref() {
+            watch.mark_read(event_id, public);
+        }
+    }
+
     fn locked_timeline(&self) -> std::sync::MutexGuard<'_, Option<timeline::Watch>> {
         self.timeline
             .lock()
@@ -997,6 +1014,13 @@ impl AppState {
             )),
         )
         .await;
+
+        // Before the sync loop, so the first batch of events is counted rather
+        // than arriving before anything is watching for it. Without this every
+        // room reports zero unread forever; see `consort_matrix::receipts`.
+        if let Err(error) = consort_matrix::count_unread(&client) {
+            tracing::warn!(%error, "unread messages will not be counted this session");
+        }
 
         let events = self.events.clone();
         replace_task(

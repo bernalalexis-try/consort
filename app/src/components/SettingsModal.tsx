@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import type { Profile } from "../lib/api";
 import { MyAccountSection } from "./MyAccountSection";
 import { NotificationsSection } from "./NotificationsSection";
+import { PrivacySection } from "./PrivacySection";
 import { VoiceVideoSection } from "./VoiceVideoSection";
 import "./SettingsModal.css";
 
@@ -11,6 +12,7 @@ const SECTIONS = [
   { id: "account", label: "My Account" },
   { id: "voice", label: "Voice & Video" },
   { id: "notifications", label: "Notifications" },
+  { id: "privacy", label: "Privacy" },
 ] as const;
 
 type SectionId = (typeof SECTIONS)[number]["id"];
@@ -214,6 +216,7 @@ export function SettingsModal({ profile, onClose, onSignedOut }: Props) {
               <VoiceVideoSection onReady={() => setReading(false)} />
             )}
             {section === "notifications" && <NotificationsSection />}
+            {section === "privacy" && <PrivacySection />}
           </div>
         </div>
       </div>
