@@ -216,28 +216,30 @@ release notes entirely.
 
 ## Releasing
 
-```sh
-scripts/release.sh
-```
-
-That is the whole of it. It refuses to run on a dirty tree or off `main`, and
-then does the five things nobody should be doing by hand.
+Actions tab, **Release**, **Run workflow**, leave the box empty. That is the
+whole of it. Nothing is run locally and nothing is typed in.
 
 **Nobody picks the version.** git-cliff reads the commits since the last tag
 and answers with the next one: a `feat` moves the minor, a `fix` moves the
-patch, a `!` or a `BREAKING CHANGE:` footer moves the major. `git cliff
---bumped-version` is what the script asks, and you can ask it yourself at any
-time to see where the next release would land. The consequence is worth being
-awake to: a `feat` that should have been a `fix` moves the minor number and
-there is no taking it back once the tag is pushed.
+patch, a `!` or a `BREAKING CHANGE:` footer moves the major. You can ask it
+yourself at any time with `git cliff --bumped-version` to see where the next
+release would land. The consequence is worth being awake to: a `feat` that
+should have been a `fix` moves the minor number and there is no taking it back
+once the run has pushed the tag.
 
-**Six files carry the version and none of them reads another:** `Cargo.toml`,
-`app/package.json`, `app/src-tauri/tauri.conf.json`, the placeholder in
-`packaging/aur/PKGBUILD` that makepkg overwrites, `pkgver` in
+**It refuses to release a red commit.** The workflow looks up the newest CI run
+for whatever is at the head of `main` and stops unless it passed. This replaces
+the person who used to check before running the release script.
+
+**Seven files carry the version and none of them reads another:**
+`Cargo.toml`, `app/package.json`, `app/src-tauri/tauri.conf.json`, the
+placeholder in `packaging/aur/PKGBUILD` that makepkg overwrites, `pkgver` in
 `packaging/arch/PKGBUILD`, which is not a placeholder but the name of the
-commit that package builds, and the `.rpm` filename in the README. The script
-writes all six and refreshes `Cargo.lock` so its four `consort-*` entries
-follow.
+commit that package builds, the `.rpm` filename in the README, and the four
+`consort-*` entries in `Cargo.lock`. `scripts/set-version.sh` writes all of
+them, and it is the one piece of the release with a test of its own:
+`scripts/set-version.test.sh` runs in CI against the repository's real files,
+so reformatting one of them fails a pull request rather than a release.
 
 **The changelog and the tag message both come from the commits.**
 `git cliff --tag` is what puts the new commits under the version about to
@@ -245,13 +247,18 @@ exist rather than under an "Unreleased" heading, and `cliff.toml` says which
 commit types are listed and which are kept out. The same notes go into the
 annotated tag, so `git show v0.2.0` says what changed.
 
-**Nothing is pushed.** The script prints the two commands and stops. Pushing
-the tag to `origin` is what runs `.github/workflows/release.yml`, which writes
-the release page from the same notes and hangs three builds off it: a Windows
-installer, a `.deb` built on Debian 12 so it runs on more than the newest
-Ubuntu, and an Arch package built by `makepkg` from `packaging/arch/PKGBUILD`.
-The two Linux ones are workflows of their own, so either can be rebuilt for a
-tag on its own from the Actions tab.
+**What the run leaves behind.** A `chore(release):` commit on `main`, so pull
+before you carry on; an annotated tag; a release page; and three packages hung
+off it: a Windows installer, a `.deb` built on Debian 12 so it runs on more
+than the newest Ubuntu, and an Arch package built by `makepkg` from
+`packaging/arch/PKGBUILD`. The two Linux ones are workflows of their own, so
+either can be rebuilt for a tag on its own from the Actions tab.
+
+**Backfilling.** Putting an existing tag in the box skips the bump and gives
+that tag its notes and its packages instead. Nothing else uses that box.
+
+**The forgejo remote gets nothing.** The workflow only knows about `origin`. If
+a tag needs to be on forgejo too, push it there by hand.
 
 ## Licence
 

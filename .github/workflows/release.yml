@@ -1,21 +1,41 @@
-# What a tag turns into.
+# What the Release button does.
 #
-# Pushing `v*` writes the release notes and hangs three builds off them: a
-# Windows installer, a .deb for Debian and Ubuntu, and a package for Arch.
-# Nothing here is run by hand and nothing here decides a version: the version
-# is already in the tag, and `scripts/release.sh` is what chose it.
+# Run it from the Actions tab with the tag box left empty and it releases what
+# is on `main`: git-cliff reads the commits since the last tag and names the
+# next version, `scripts/set-version.sh` writes that into the seven files that
+# carry one, the changelog is regenerated, and the commit and the annotated tag
+# are pushed. Three builds then hang off the release page: a Windows installer,
+# a .deb for Debian and Ubuntu, and a package for Arch.
 #
-# The Windows build is a job in this file and the two Linux ones are workflows
-# of their own, called from here so they cannot start before the release page
-# they upload to exists. That also makes each of them dispatchable alone, which
-# is what rebuilding one package without the others looks like.
+# Nobody picks the version and nobody runs anything locally. A `feat` moves the
+# minor, a `fix` moves the patch, a `!` or a `BREAKING CHANGE:` footer moves the
+# major, which is the whole reason CONTRIBUTING.md asks for the commit messages
+# it does.
+#
+# ## Why the bump is a job in this file rather than a workflow of its own
+#
+# Because a push made with `GITHUB_TOKEN` does not trigger another workflow. A
+# separate bump workflow would push the tag and nothing would happen: no notes,
+# no packages, no error. Everything that has to follow a tag therefore has to
+# be in the same run as the thing that writes it, which is what the `needs:`
+# below are doing.
+#
+# For the same reason, the `chore(release):` commit this pushes gets no CI run
+# of its own. That is not a gap: the gate below is on the commit being
+# released, which is a merge somebody's pull request already took through CI.
 #
 # ## Backfilling
 #
-# `workflow_dispatch` takes a tag, so a release that was made before this file
-# existed can be given its notes and its installer without moving anything. The
-# notes job is idempotent for exactly that reason: it adds a release when there
-# is none and leaves an existing one alone.
+# Putting an existing tag in the box skips the bump and gives that tag its
+# notes and its packages, which is how a release made before this file existed
+# is filled in. The notes step is idempotent for the same reason: it adds a
+# release when there is none and leaves an existing one alone.
+#
+# ## Pushing to main
+#
+# This works because `main` carries no branch protection and no ruleset. Adding
+# either means giving this workflow a deploy key or a GitHub App token, because
+# `GITHUB_TOKEN` cannot push past a protected branch.
 #
 # ## Cost
 #
@@ -39,8 +59,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: The existing tag to build and write notes for.
-        required: true
+        description: Leave empty to release what is on main. An existing tag here backfills that release instead.
+        required: false
+        default: ""
 
 env:
   CARGO_TERM_COLOR: always
@@ -49,35 +70,57 @@ env:
 
 permissions:
   contents: write
+  # `gh run list`, for the CI gate below.
+  actions: read
+
+# One release at a time, and never cancelled: a run interrupted between the
+# commit and the tag leaves main carrying a version that was never released.
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
-  notes:
-    name: Notes
+  release:
+    name: Version and notes
     runs-on: ubuntu-latest
     outputs:
-      tag: ${{ steps.which.outputs.tag }}
-      version: ${{ steps.which.outputs.version }}
+      tag: ${{ steps.tag.outputs.tag }}
+      version: ${{ steps.tag.outputs.version }}
     steps:
-      - name: Which tag
-        id: which
+      - name: What this run is for
+        id: mode
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          EVENT: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          tag="${{ inputs.tag || github.ref_name }}"
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+          if [ -n "${INPUT_TAG:-}" ]; then
+            echo "Backfilling $INPUT_TAG."
+            echo "bump=false" >> "$GITHUB_OUTPUT"
+            echo "ref=$INPUT_TAG" >> "$GITHUB_OUTPUT"
+          elif [ "$EVENT" = push ]; then
+            echo "$REF_NAME was pushed."
+            echo "bump=false" >> "$GITHUB_OUTPUT"
+            echo "ref=$REF_NAME" >> "$GITHUB_OUTPUT"
+          else
+            echo "Releasing what is on main."
+            echo "bump=true" >> "$GITHUB_OUTPUT"
+            echo "ref=main" >> "$GITHUB_OUTPUT"
+          fi
 
       - uses: actions/checkout@v4
         with:
-          ref: ${{ steps.which.outputs.tag }}
-          # git-cliff reads the whole history and every tag to work out where
-          # this release starts. A shallow clone gives it one commit and it
-          # writes an empty changelog rather than failing.
+          ref: ${{ steps.mode.outputs.ref }}
+          # git-cliff reads the whole history and every tag, both to work out
+          # where this release starts and to name the next version. A shallow
+          # clone gives it one commit and it writes an empty changelog rather
+          # than failing.
           fetch-depth: 0
 
       # The published binary rather than an action wrapping it, pinned by
       # version and checked against the checksum the release publishes. One
-      # fewer third party with a step in this workflow, and the same binary the
-      # release script runs locally.
+      # fewer third party with a step in this workflow.
       - name: Install git-cliff
         env:
           CLIFF: 2.14.1
@@ -92,6 +135,112 @@ jobs:
           tar -xzf "$archive"
           sudo install "git-cliff-${CLIFF}/git-cliff" /usr/local/bin/git-cliff
 
+      # Before the CI gate, so that a run with nothing releasable in it says so
+      # rather than complaining about a commit it was never going to tag.
+      - name: Which version comes next
+        id: bump
+        if: steps.mode.outputs.bump == 'true'
+        run: |
+          set -euo pipefail
+          tag=$(git cliff --bumped-version)
+          case "$tag" in
+            v[0-9]*) ;;
+            *)
+              echo "git-cliff would not name a version. Got '$tag'." >&2
+              exit 1
+              ;;
+          esac
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "$tag already exists, so there is nothing releasable since the" >&2
+            echo "last tag. Only feat, fix, perf, refactor and docs commits count;" >&2
+            echo "cliff.toml says which." >&2
+            exit 1
+          fi
+          echo "The next release is $tag."
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      # Whoever ran the release script used to be the one who had looked at CI
+      # first. Nobody runs it now, so this is that person.
+      - name: CI is green on the commit being released
+        if: steps.mode.outputs.bump == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sha=$(git rev-parse HEAD)
+          state=$(gh run list --workflow ci.yml --commit "$sha" \
+            --json status,conclusion --limit 20 \
+            --jq '[.[]] | first | "\(.status // "none") \(.conclusion // "none")"')
+          case "${state:-}" in
+            "completed success")
+              echo "CI passed on $sha."
+              ;;
+            ""|"none none")
+              echo "No CI run for $sha. Push something to main, or wait for the" >&2
+              echo "run on it to start." >&2
+              exit 1
+              ;;
+            *)
+              echo "The newest CI run for $sha is '$state'. Not releasing it." >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Write the version into the tree
+        if: steps.mode.outputs.bump == 'true'
+        env:
+          TAG: ${{ steps.bump.outputs.tag }}
+        run: |
+          set -euo pipefail
+          scripts/set-version.sh "${TAG#v}"
+          # --tag because the tag does not exist yet: without it everything
+          # since the last release lands under an "Unreleased" heading.
+          git cliff --tag "$TAG" --output CHANGELOG.md
+          git --no-pager diff --stat
+
+      - name: Commit it, tag it, push it
+        if: steps.mode.outputs.bump == 'true'
+        env:
+          TAG: ${{ steps.bump.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -qam "chore(release): ${TAG#v}"
+
+          # The notes go in the tag object as well as on the release page, so
+          # somebody reading the history with git alone gets them too.
+          #
+          # --unreleased rather than --latest, and --tag for the same reason
+          # the changelog above needs it: the tag does not exist yet, so
+          # "latest" is still the previous release and the tag would carry the
+          # wrong version's notes. The sed drops the version heading, which the
+          # tag's own name already is.
+          #
+          # --cleanup=verbatim because the notes are markdown and git's default
+          # strips every line beginning with a hash, which is all of the
+          # section headings.
+          git cliff --tag "$TAG" --unreleased --strip all \
+            | sed '0,/^## /{/^## /d}' \
+            | git tag -a "$TAG" -F - --cleanup=verbatim
+
+          # Never --force. A merge that landed while this was running should
+          # fail the push rather than be overwritten, because CI passed on the
+          # commit below it and not on that one.
+          git push origin HEAD:main
+          git push origin "refs/tags/$TAG"
+
+      - name: The tag this run is for
+        id: tag
+        env:
+          BUMPED: ${{ steps.bump.outputs.tag }}
+          REF: ${{ steps.mode.outputs.ref }}
+        run: |
+          set -euo pipefail
+          tag=${BUMPED:-$REF}
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+
       # The section for this tag alone. `--strip all` drops the file's own
       # header and footer; the sed drops the version heading the body template
       # writes, which the release page is already titled with.
@@ -104,7 +253,7 @@ jobs:
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.which.outputs.tag }}
+          TAG: ${{ steps.tag.outputs.tag }}
         run: |
           set -euo pipefail
           if gh release view "$TAG" >/dev/null 2>&1; then
@@ -123,11 +272,11 @@ jobs:
   windows:
     name: Windows installer
     runs-on: windows-latest
-    needs: notes
+    needs: release
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.notes.outputs.tag }}
+          ref: ${{ needs.release.outputs.tag }}
 
       - uses: actions/setup-node@v4
         with:
@@ -158,8 +307,8 @@ jobs:
       - name: Attach it to the release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ needs.notes.outputs.tag }}
-          VERSION: ${{ needs.notes.outputs.version }}
+          TAG: ${{ needs.release.outputs.tag }}
+          VERSION: ${{ needs.release.outputs.version }}
         shell: bash
         run: |
           set -euo pipefail
@@ -171,18 +320,18 @@ jobs:
   # is what a person watching a release run sees.
   deb:
     name: Debian package
-    needs: notes
+    needs: release
     uses: ./.github/workflows/package-deb.yml
     permissions:
       contents: write
     with:
-      tag: ${{ needs.notes.outputs.tag }}
+      tag: ${{ needs.release.outputs.tag }}
 
   arch:
     name: Arch package
-    needs: notes
+    needs: release
     uses: ./.github/workflows/package-arch.yml
     permissions:
       contents: write
     with:
-      tag: ${{ needs.notes.outputs.tag }}
+      tag: ${{ needs.release.outputs.tag }}

@@ -267,3 +267,8 @@ jobs:
             exit 1
           fi
           echo "None found."
+
+      # The release runs unattended now, so the one part of it that can fail
+      # quietly is checked here instead of by whoever was watching.
+      - name: The version can still be written
+        run: scripts/set-version.test.sh
