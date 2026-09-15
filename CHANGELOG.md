@@ -4,6 +4,21 @@ What changed in each release, taken from the commit messages. Consort is
 pre-1.0 and its versions say so: anything can move between minor versions,
 and the patch number is where most of the work has landed so far.
 
+## 0.6.0 (2026-09-15)
+
+### Added
+
+- **timeline:** Mark what has not been read, and where reading stopped
+- **timeline:** Send an attachment
+- **notifications:** Say something when Consort is not the window in front
+
+### Fixed
+
+- **timeline:** Line the composer row up
+- **timeline:** Read a pasted screenshot in Rust, not in the page
+- **deps:** Move vitest past GHSA-82fw-gwwq-j7x9
+- Bump rustls to 0.23.45 for RUSTSEC-2026-0285
+
 ## 0.5.0 (2026-09-05)
 
 ### Added
