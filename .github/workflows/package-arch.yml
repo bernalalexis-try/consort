@@ -3,18 +3,27 @@
 # Called by release.yml once a tag has a release page, and dispatchable on its
 # own to rebuild one without touching the other packages.
 #
-# ## Why this one does not check out the tag
+# ## Why this checks out the tag, like the other two
 #
-# The other two package workflows compile the tree they check out. This one
-# does not compile anything itself: it runs makepkg over
+# It used to check out whatever ref the run started from, on the reasoning that
+# this workflow compiles nothing itself: it runs makepkg over
 # packaging/arch/PKGBUILD, and that recipe names the commit it builds, as
-# `#tag=v$pkgver`. So what has to be checked out is the recipe, and the recipe
-# that is current is the one on the ref this workflow was started from.
+# `#tag=v$pkgver`, so the only thing needing checking out is the recipe.
 #
-# Which leaves one thing that can go wrong, and it is guarded rather than
-# assumed: somebody dispatching this against a tag the recipe is not for would
-# get a package built from one version attached to the release of another. The
-# versions are compared before anything is built.
+# That reasoning ignored where the tag comes from. release.yml writes the
+# version into the tree, commits, tags and pushes, and only then calls this. A
+# called workflow checks out the SHA the run started from, which is main as it
+# was before that commit, so the recipe read there is the previous release's
+# and the guard below refuses the build. v0.6.0 got no Arch package that way.
+#
+# The recipe that builds a tag is the one on that tag, so that is what gets
+# checked out. The consequence worth knowing: a packaging fix landed on main
+# does not reach an already-released tag, and reaches users at the next
+# release.
+#
+# The guard stays, because a tag whose recipe was never updated is still
+# possible, and backfilling one released before this file existed would find
+# it. The versions are compared before anything is built.
 #
 # ## Why the tests are skipped
 #
@@ -61,6 +70,8 @@ jobs:
         run: pacman -Syu --noconfirm --needed git github-cli
 
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
 
       - name: The recipe is for this tag
         env:
@@ -69,8 +80,8 @@ jobs:
           set -euo pipefail
           recipe=$(sed -n 's/^pkgver=//p' packaging/arch/PKGBUILD)
           if [ "v$recipe" != "$TAG" ]; then
-            echo "packaging/arch/PKGBUILD builds v$recipe and this run is for $TAG."
-            echo "Start this workflow from a ref whose recipe is the one you want."
+            echo "packaging/arch/PKGBUILD at $TAG builds v$recipe, not $TAG."
+            echo "That tag's recipe never took the version. It cannot be packaged."
             exit 1
           fi
           echo "Building v$recipe."
