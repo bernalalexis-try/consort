@@ -455,12 +455,39 @@
 }
 
 /*
+  How many messages are waiting, on a channel nobody was named in.
+
+  The same white the name already carries, said as a number, and unfilled. Gold
+  is the mention, mint is voice and presence, amber is the connection: an
+  unread count is none of the three and a fourth colour would leave the list
+  with four things to learn. A pill in a grey off the surfaces would read as a
+  quieter mention rather than as a different fact.
+
+  Shares the badge slot with the gold one and never appears beside it, so it
+  takes the same `order` and the same refusal to shrink, and the same 18px line
+  box so a row's height does not depend on which of the two it drew.
+*/
+.channels__unread {
+  flex-shrink: 0;
+  order: 1;
+  min-width: 18px;
+  padding: 0 var(--space-1);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 18px;
+  text-align: right;
+  color: var(--text-primary);
+}
+
+/*
   Room for the control that reads a voice channel, which is absolutely
   positioned over the right of the row and would otherwise be drawn on top of
   the count. Reserved rather than resolved on hover: the control appears when
   the pointer arrives, and a badge that jumped sideways to make way for it would
   move the thing somebody was reading.
 */
-.channels__row[data-chat="true"] .channels__mentions {
+.channels__row[data-chat="true"] .channels__mentions,
+.channels__row[data-chat="true"] .channels__unread {
   margin-right: calc(24px + var(--space-1));
 }

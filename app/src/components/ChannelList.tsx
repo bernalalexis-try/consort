@@ -364,22 +364,27 @@ function peopleIn(
 }
 
 /**
- * How many mentions a badge will draw before it stops counting.
+ * How high either badge counts before it stops.
  *
  * Past this the number stops being information and starts being width. What
- * somebody does about nine mentions and about ninety is the same thing, and a
- * badge that grows to four digits pushes the channel name it belongs to off
- * the row.
+ * somebody does about nine of something and about ninety is the same thing,
+ * and a badge that grows to four digits pushes the channel name it belongs to
+ * off the row.
  */
-const MOST_MENTIONS_SHOWN = 99;
+const MOST_SHOWN = 99;
+
+/** What a badge draws, which stops climbing at the cap rather than growing. */
+function shown(count: number): string {
+  return count > MOST_SHOWN ? `${MOST_SHOWN}+` : String(count);
+}
 
 /**
- * How many messages are waiting, drawn as a number.
+ * How many times somebody said your name here.
  *
- * Only ever mentions. An unread count is drawn as the channel's name in white
- * instead, because the number is not the useful part: what somebody does about
- * forty unread messages and about four is open the channel. A mention is a
- * different claim, it is about them, and the count is worth the space.
+ * Gold, and first claim on the one badge slot the row has. A mention is a
+ * different claim from an unread message: it is about you rather than about
+ * the channel, so when there are both it is the one drawn, and the unread fact
+ * is still carried by the name in white beside it.
  */
 function MentionBadge({ count, channel }: { count: number; channel: Channel }) {
   if (count === 0) return null;
@@ -394,7 +399,37 @@ function MentionBadge({ count, channel }: { count: number; channel: Channel }) {
       */
       aria-label={`${count} ${count === 1 ? "mention" : "mentions"} in ${channelLabel(channel)}`}
     >
-      {count > MOST_MENTIONS_SHOWN ? `${MOST_MENTIONS_SHOWN}+` : count}
+      {shown(count)}
+    </span>
+  );
+}
+
+/**
+ * How many messages are waiting here.
+ *
+ * White and unfilled, rather than a second pill beside the gold one. That is
+ * the same treatment the channel's name already carries, said as a number, and
+ * it is what keeps a mention the only thing in the list with a colour of its
+ * own. Two filled badges on one row would make the reader compare them, and
+ * they are not comparable.
+ *
+ * #53 argued this number was not worth drawing: what somebody does about forty
+ * unread messages and about four is open the channel. Using it said otherwise.
+ * White tells a reader something is waiting and not whether it is one message
+ * or two hundred, and that is the difference between opening a channel now and
+ * leaving it until after lunch. See #62.
+ */
+function UnreadBadge({ count, channel }: { count: number; channel: Channel }) {
+  if (count === 0) return null;
+
+  return (
+    <span
+      className="channels__unread"
+      // Labelled for the same reason the mention badge is, and in the same
+      // shape: a badge is read on its own and a bare number counts nothing.
+      aria-label={`${count} unread ${count === 1 ? "message" : "messages"} in ${channelLabel(channel)}`}
+    >
+      {shown(count)}
     </span>
   );
 }
@@ -456,11 +491,11 @@ function ChannelRow({
           */
           data-call={callState ?? undefined}
           /*
-            Something has been said here since this account last looked. A
-            boolean rather than the count, because what is drawn is emphasis:
-            the number of unread messages is not the useful part, and a channel
-            list of numbers is a channel list somebody has to read rather than
-            scan.
+            Something has been said here since this account last looked, drawn
+            as the name in white. A boolean because that is all the name can
+            say; how many is the badge's job, and on a channel whose badge went
+            to the mentions this stays the only thing saying anything is
+            waiting at all.
           */
           data-unread={channel.unread > 0}
           /*
@@ -511,6 +546,17 @@ function ChannelRow({
           somebody is looking at the one mention they are never told about.
         */}
         <MentionBadge count={channel.mentions} channel={channel} />
+        {/*
+          One badge slot, and the mention has first claim on it. A channel with
+          both draws the gold number alone: a mention already implies unread,
+          so a second pill beside it tells a reader something they have worked
+          out, and two numbers on one row is the list somebody has to read
+          rather than scan that #53 was right to be wary of. The unread fact is
+          not lost either way, because the name is white regardless.
+        */}
+        {channel.mentions === 0 && (
+          <UnreadBadge count={channel.unread} channel={channel} />
+        )}
       </div>
       {/*
         Beside the channel that was clicked rather than in the connection
