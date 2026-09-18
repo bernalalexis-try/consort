@@ -10,7 +10,7 @@ vi.mock("../lib/api", async (importOriginal) => ({
   memberProfile,
 }));
 
-import { MessageGroups, firstUnread, group } from "./MessageGroups";
+import { MessageGroups, firstUnread, group, timeOf } from "./MessageGroups";
 import { resetAvatarCache } from "../lib/avatars";
 import { resetPresenceCache } from "../lib/presence";
 import type { Message } from "../lib/api";
@@ -165,6 +165,66 @@ describe("grouping", () => {
 
   it("groups nothing out of nothing", () => {
     expect(group([])).toEqual([]);
+  });
+});
+
+describe("when something was said", () => {
+  const MINUTE = 60 * 1000;
+
+  it("puts a time on every message in a group, not only the first", () => {
+    // A group is one person talking without pause, so six messages used to
+    // carry one time between them. "When was that said" is a question about
+    // the message rather than about the burst it arrived in.
+    const { container } = draw([
+      said("$1", ADA, "one"),
+      said("$2", ADA, "two", NOON + MINUTE),
+      said("$3", ADA, "three", NOON + 2 * MINUTE),
+    ]);
+
+    expect(container.querySelectorAll("time")).toHaveLength(3);
+    expect(screen.getByText(timeOf(NOON + MINUTE))).toBeVisible();
+    expect(screen.getByText(timeOf(NOON + 2 * MINUTE))).toBeVisible();
+  });
+
+  it("says a group's first time once, in the byline", () => {
+    // The byline sits directly above it. The same clock time on both lines
+    // would be the same fact twice.
+    const { container } = draw([
+      said("$1", ADA, "one"),
+      said("$2", ADA, "two", NOON + MINUTE),
+    ]);
+
+    expect(screen.getAllByText(timeOf(NOON))).toHaveLength(1);
+    expect(container.querySelectorAll("time")).toHaveLength(2);
+  });
+
+  it("draws one time for one message", () => {
+    const { container } = draw([said("$1", ADA, "alone")]);
+
+    expect(container.querySelectorAll("time")).toHaveLength(1);
+    expect(screen.getByText(timeOf(NOON))).toBeVisible();
+  });
+
+  it("leaves two groups with a byline each and nothing in the gutter", () => {
+    // Far enough apart to be two things to read, so each already has its own
+    // byline and there is no continuation to put a time beside.
+    const { container } = draw([
+      said("$1", ADA, "one"),
+      said("$2", ADA, "two", NOON + 60 * MINUTE),
+    ]);
+
+    expect(container.querySelectorAll("time")).toHaveLength(2);
+  });
+
+  it("carries the whole date, for the times a clock face cannot say", () => {
+    // The tooltip is on the time rather than on the words, so a pointer
+    // crossing a room does not raise one over the thing being read.
+    draw([said("$1", ADA, "one"), said("$2", ADA, "two", NOON + MINUTE)]);
+
+    expect(screen.getByText(timeOf(NOON + MINUTE))).toHaveAttribute(
+      "title",
+      new Date(NOON + MINUTE).toLocaleString(),
+    );
   });
 });
 

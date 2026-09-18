@@ -584,6 +584,31 @@ export function MessageGroups({
                           ? { "data-mentions-me": "true" }
                           : {})}
                       >
+                        {/*
+                          The time, for everything the byline above does not
+                          speak for. A group is one person talking without
+                          pause, so six messages regularly carried one time on
+                          the first of them and nothing on the other five, and
+                          "when was that said" is a question about the message
+                          rather than about the burst it arrived in.
+
+                          Skipped on the group's own first message, which has
+                          the byline's time directly above it. Drawn there as
+                          well would be the same fact twice on two lines.
+
+                          In the avatar's column rather than beside the words,
+                          which is where Element puts it and where a reader can
+                          run an eye down the times without reading the room.
+                        */}
+                        {message.id !== one.messages[0]?.id && (
+                          <time
+                            className="timeline__message-at"
+                            dateTime={new Date(message.at).toISOString()}
+                            title={dateOf(message.at)}
+                          >
+                            {timeOf(message.at)}
+                          </time>
+                        )}
                         {message.replyTo !== undefined &&
                           (answered === undefined ? (
                             <p className="timeline__reply timeline__reply--gone">
