@@ -1740,6 +1740,22 @@ pub async fn open_link(address: String) -> Result<(), CommandError> {
     })
 }
 
+/// Close Consort.
+///
+/// Here rather than in the page because the capability set grants
+/// `core:default` only, which does not carry window closing, and a capability
+/// added to reach a window from JavaScript would be a capability added to
+/// reach every window from JavaScript.
+///
+/// As abrupt as the window's own close button, which is to say completely: the
+/// event loop exits the process, so nothing managed here is dropped and a call
+/// in progress is left for the SFU and the homeserver to time out. That is not
+/// new and not this command's to fix.
+#[tauri::command]
+pub fn quit(app: tauri::AppHandle) {
+    app.exit(0);
+}
+
 /// Put one message's address on the clipboard.
 ///
 /// One command rather than an address returned and copied from the page,

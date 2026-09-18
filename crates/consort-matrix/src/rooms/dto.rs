@@ -117,20 +117,21 @@ pub struct Channel {
     /// not in is a room we cannot read and nothing has arrived in it as far as
     /// this account is concerned.
     ///
-    /// A count rather than a flag, even though the interface draws it as one:
-    /// the number is what the mention badge beside it is compared against, and
-    /// a boolean here would make "unread but not mentioned" and "mentioned"
-    /// indistinguishable on the wire.
+    /// A count rather than a flag, which since #62 is also how the interface
+    /// draws it: the channel's name goes white and the number is drawn beside
+    /// it. It would have to be a count either way, because the mention count
+    /// is compared against it and a boolean here would make "unread but not
+    /// mentioned" and "mentioned" indistinguishable on the wire.
     #[serde(default)]
     pub unread: u64,
     /// How many of those messages were about this account.
     ///
     /// A mention and an unread message are different facts and the interface
-    /// draws them differently: unread is the channel's name in white, a
-    /// mention is a number in a badge. Never larger than
-    /// [`unread`](Self::unread) in practice, and not relied on to be: the two
-    /// are counted separately and a client that assumed a relationship between
-    /// them would be inventing one.
+    /// draws them differently: unread is the channel's name in white with a
+    /// plain count beside it, a mention is a gold badge that takes that count's
+    /// place when there is one. Never larger than [`unread`](Self::unread) in
+    /// practice, and not relied on to be: the two are counted separately and a
+    /// client that assumed a relationship between them would be inventing one.
     #[serde(default)]
     pub mentions: u64,
 }

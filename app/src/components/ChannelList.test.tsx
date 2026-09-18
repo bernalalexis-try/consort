@@ -145,12 +145,34 @@ describe("ChannelList", () => {
     ).toHaveAttribute("data-unread", "false");
   });
 
-  it("draws no number for unread messages, only for mentions", () => {
-    // What somebody does about forty unread messages and about four is open
-    // the channel. A list of numbers is a list somebody has to read.
-    list([{ ...text("!a:example.org", "general"), unread: 40 }]);
+  it("counts what is waiting in an unread channel", () => {
+    list([{ ...text("!a:example.org", "general"), unread: 12 }]);
 
-    expect(screen.queryByText("40")).not.toBeInTheDocument();
+    expect(
+      screen.getByLabelText("12 unread messages in general"),
+    ).toHaveTextContent("12");
+  });
+
+  it("says one unread message in the singular", () => {
+    list([{ ...text("!a:example.org", "general"), unread: 1 }]);
+
+    expect(
+      screen.getByLabelText("1 unread message in general"),
+    ).toBeInTheDocument();
+  });
+
+  it("draws no unread count on a channel that has been read", () => {
+    list([text("!a:example.org", "general")]);
+
+    expect(
+      screen.queryByLabelText(/unread message/),
+    ).not.toBeInTheDocument();
+  });
+
+  it("stops counting unread messages at the same point mentions stop", () => {
+    list([{ ...text("!a:example.org", "general"), unread: 300 }]);
+
+    expect(screen.getByText("99+")).toBeInTheDocument();
   });
 
   it("counts the times somebody said your name", () => {
@@ -175,10 +197,27 @@ describe("ChannelList", () => {
     expect(screen.getByText("99+")).toBeInTheDocument();
   });
 
-  it("draws no badge on a channel nobody has been named in", () => {
-    list([{ ...text("!a:example.org", "general"), unread: 4 }]);
+  it("gives the badge to the mention when a channel has both", () => {
+    // One slot, and the mention has first claim on it. A mention already
+    // implies unread, so a second number beside it counts something the
+    // reader has worked out, and two on one row is a list to read rather
+    // than scan.
+    list([{ ...text("!a:example.org", "general"), unread: 9, mentions: 3 }]);
 
-    expect(screen.queryByText("4")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("3 mentions in general")).toBeInTheDocument();
+    expect(screen.queryByLabelText(/unread message/)).not.toBeInTheDocument();
+    expect(screen.queryByText("9")).not.toBeInTheDocument();
+  });
+
+  it("still marks a mentioned channel as unread", () => {
+    // The name in white is the whole unread signal on a row whose badge went
+    // to the mentions, so it had better still be there.
+    list([{ ...text("!a:example.org", "general"), unread: 9, mentions: 3 }]);
+
+    expect(screen.getByRole("button", { name: /general/ })).toHaveAttribute(
+      "data-unread",
+      "true",
+    );
   });
 
   it("names the space at the top", () => {
