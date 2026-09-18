@@ -228,6 +228,7 @@ pub fn run() {
             commands::timeline_typing,
             commands::timeline_mark_read,
             commands::open_link,
+            commands::quit,
             commands::room_at,
             commands::direct_room,
             commands::timeline_copy_link,

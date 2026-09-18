@@ -2013,6 +2013,17 @@ export function openLink(address: string): Promise<void> {
   return invoke<void>("open_link", { address });
 }
 
+/**
+ * Close Consort.
+ *
+ * Never resolves in practice. The process is gone before the acknowledgement
+ * would arrive, so nothing may be sequenced after this: treat it as the last
+ * thing that happens.
+ */
+export function quit(): Promise<void> {
+  return invoke<void>("quit");
+}
+
 export function saveAttachment(
   source: string,
   name: string,

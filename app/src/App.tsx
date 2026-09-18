@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import { LoginScreen } from "./components/LoginScreen";
 import { SignedIn } from "./components/SignedIn";
 import { Splash } from "./components/Splash";
-import { asCommandError, sessionStatus, type Profile } from "./lib/api";
+import { asCommandError, quit, sessionStatus, type Profile } from "./lib/api";
 
 type View =
   | { name: "checking" }
@@ -37,6 +37,35 @@ export function App() {
     return () => {
       cancelled = true;
     };
+  }, []);
+
+  /*
+    Ctrl+Q closes Consort, as it does in every other application on this
+    desktop.
+
+    Here rather than in the shell because all three views below are somewhere
+    somebody can be stuck: a login that will not go through and a splash
+    waiting on a homeserver are exactly when a way out is wanted, and a quit
+    key that only worked once you were signed in would be missing then.
+
+    Deliberately not filtered by what has focus, which is the one thing the
+    Ctrl+V handler in `RoomTimeline` does do. A paste aimed at a settings field
+    is not the room's; a quit is nobody's in particular, and a quit key that
+    silently did nothing depending on where the caret sat would be worse than
+    no quit key at all.
+
+    `preventDefault` because WebKitGTK may have its own opinion about this
+    combination, and the answer is ours.
+  */
+  useEffect(() => {
+    function onKey(event: KeyboardEvent) {
+      if (!event.ctrlKey || event.key !== "q") return;
+      event.preventDefault();
+      void quit();
+    }
+
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
   }, []);
 
   const handleSignedIn = useCallback((profile: Profile) => {

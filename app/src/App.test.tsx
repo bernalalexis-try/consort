@@ -20,6 +20,7 @@ const onKeyBackup = vi.hoisted(() => vi.fn(() => Promise.resolve(() => {})));
 const onRooms = vi.hoisted(() => vi.fn(() => Promise.resolve(() => {})));
 const onThread = vi.hoisted(() => vi.fn(() => Promise.resolve(() => {})));
 const resendState = vi.hoisted(() => vi.fn(() => Promise.resolve()));
+const quit = vi.hoisted(() => vi.fn(() => Promise.resolve()));
 vi.mock("./lib/api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./lib/api")>()),
   sessionStatus,
@@ -33,6 +34,7 @@ vi.mock("./lib/api", async (importOriginal) => ({
   onRooms,
   onThread,
   resendState,
+  quit,
 }));
 
 import { App } from "./App";
@@ -56,6 +58,7 @@ describe("App", () => {
       description: "Your sign-in is stored in your system keyring.",
       isPreferred: true,
     });
+    quit.mockClear();
   });
 
   it("shows the splash while the session status is unknown", () => {
@@ -156,6 +159,63 @@ describe("App", () => {
     await Promise.resolve();
 
     expect(consoleError).not.toHaveBeenCalled();
+  });
+
+  describe("Ctrl+Q", () => {
+    it("closes Consort", async () => {
+      sessionStatus.mockResolvedValue({ status: "signedOut" });
+      render(<App />);
+      await screen.findByRole("heading", { name: /sign in/i });
+
+      await userEvent.keyboard("{Control>}q{/Control}");
+
+      expect(quit).toHaveBeenCalledTimes(1);
+    });
+
+    it("closes it from the splash, before anything is known", async () => {
+      // A session check waiting on a homeserver that is not answering is
+      // exactly when somebody wants out, and it is before the shell exists.
+      sessionStatus.mockReturnValue(new Promise(() => {}));
+      render(<App />);
+
+      await userEvent.keyboard("{Control>}q{/Control}");
+
+      expect(quit).toHaveBeenCalledTimes(1);
+    });
+
+    it("closes it from inside a text box as well", async () => {
+      // Every other application on this desktop quits on Ctrl+Q wherever the
+      // caret is, and a quit key that depended on focus would do nothing in
+      // the one place somebody spends their time.
+      sessionStatus.mockResolvedValue({ status: "signedOut" });
+      render(<App />);
+
+      await userEvent.click(await screen.findByLabelText(/username/i));
+      await userEvent.keyboard("{Control>}q{/Control}");
+
+      expect(quit).toHaveBeenCalledTimes(1);
+    });
+
+    it("leaves a bare q to whatever is being typed into", async () => {
+      sessionStatus.mockResolvedValue({ status: "signedOut" });
+      render(<App />);
+      await screen.findByRole("heading", { name: /sign in/i });
+
+      await userEvent.keyboard("q");
+
+      expect(quit).not.toHaveBeenCalled();
+    });
+
+    it("stops listening once the app is gone", async () => {
+      sessionStatus.mockResolvedValue({ status: "signedOut" });
+      const { unmount } = render(<App />);
+      await screen.findByRole("heading", { name: /sign in/i });
+
+      unmount();
+      await userEvent.keyboard("{Control>}q{/Control}");
+
+      expect(quit).not.toHaveBeenCalled();
+    });
   });
 
   it("logs the failure detail when the status check fails", async () => {
