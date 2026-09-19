@@ -45,6 +45,7 @@ import {
 import {
   MessageGroups,
   ReplyIcon,
+  firstOfEachDay,
   firstUnread,
   group,
   previewOf,
@@ -961,6 +962,8 @@ export function RoomTimeline({
 
   const messages = mine ? timeline.messages : [];
   const groups = useMemo(() => group(messages), [messages]);
+  // Which messages open a day, for the separators drawn above them.
+  const newDay = useMemo(() => firstOfEachDay(messages), [messages]);
   /*
     What a reply in this room may point at: whatever is loaded, and beside it
     whatever the room looked up for the replies naming something older than
@@ -1084,6 +1087,7 @@ export function RoomTimeline({
           onReply={reply}
           onCopyLink={copyLink}
           newFrom={newFrom}
+          newDay={newDay}
           onOpenThread={(rootId) => {
             setOpening(rootId);
             // Cleared here as well as on the channel, because a command that

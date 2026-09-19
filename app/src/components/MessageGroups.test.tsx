@@ -10,7 +10,14 @@ vi.mock("../lib/api", async (importOriginal) => ({
   memberProfile,
 }));
 
-import { MessageGroups, firstUnread, group, timeOf } from "./MessageGroups";
+import {
+  MessageGroups,
+  dayLabel,
+  firstOfEachDay,
+  firstUnread,
+  group,
+  timeOf,
+} from "./MessageGroups";
 import { resetAvatarCache } from "../lib/avatars";
 import { resetPresenceCache } from "../lib/presence";
 import type { Message } from "../lib/api";
@@ -312,6 +319,203 @@ describe("where reading stopped", () => {
     );
 
     expect(screen.queryByText("New messages")).not.toBeInTheDocument();
+  });
+});
+
+/*
+  Every timestamp below is built with the local constructor rather than a UTC
+  string or a bare epoch number, because the rule being pinned is about the
+  local calendar day. `Date.UTC(2026, 0, 1, 23, 58)` is the 1st in London and
+  the 2nd in Sydney, so a test written that way asserts something different on
+  every machine that runs it.
+*/
+const LATE = new Date(2026, 0, 1, 23, 58).getTime();
+const JUST_AFTER = new Date(2026, 0, 2, 0, 1).getTime();
+
+describe("the day a message was said", () => {
+  it("names only the first message of a run inside one day", () => {
+    const opens = firstOfEachDay([
+      said("$1", ADA, "one", new Date(2026, 0, 1, 9, 0).getTime()),
+      said("$2", BOB, "two", new Date(2026, 0, 1, 14, 0).getTime()),
+      said("$3", ADA, "three", new Date(2026, 0, 1, 22, 0).getTime()),
+    ]);
+
+    expect([...opens]).toEqual(["$1"]);
+  });
+
+  it("names the first message of the second day when a room spans midnight", () => {
+    const opens = firstOfEachDay([
+      said("$1", ADA, "one", LATE),
+      said("$2", BOB, "two", JUST_AFTER),
+      said("$3", BOB, "three", new Date(2026, 0, 2, 9, 0).getTime()),
+    ]);
+
+    expect([...opens]).toEqual(["$1", "$2"]);
+  });
+
+  it("names the first loaded message, because the day it opens has to be said", () => {
+    // Whatever is at the top of the window starts a day as far as a reader is
+    // concerned. Paging older history in may take the line away again, which
+    // is the right answer recomputing rather than a flicker to suppress.
+    expect([...firstOfEachDay([said("$1", ADA, "alone")])]).toEqual(["$1"]);
+  });
+
+  it("names nothing in an empty room", () => {
+    expect(firstOfEachDay([]).size).toBe(0);
+  });
+
+  it("names a message inside a group when one person talks across midnight", () => {
+    // Three minutes apart and the same sender, so `group` reads them as one
+    // burst. The day changed in the middle of it all the same.
+    const messages = [
+      said("$1", ADA, "one", LATE),
+      said("$2", ADA, "two", JUST_AFTER),
+    ];
+
+    expect(group(messages)).toHaveLength(1);
+    expect([...firstOfEachDay(messages)]).toEqual(["$1", "$2"]);
+  });
+
+  it("names one message when a day change and a group change land together", () => {
+    // Different people either side of midnight, so both rules fire on `$2`.
+    // The set holds IDs, so there is one of it and the drawing cannot double.
+    const opens = firstOfEachDay([
+      said("$1", ADA, "one", LATE),
+      said("$2", BOB, "two", JUST_AFTER),
+    ]);
+
+    expect([...opens]).toEqual(["$1", "$2"]);
+  });
+});
+
+describe("what a date separator says", () => {
+  const NOW = new Date(2026, 2, 15, 12, 0).getTime();
+  const on = (year: number, month: number, day: number) =>
+    new Date(year, month, day, 10, 0).getTime();
+
+  it("says Today for the day being read", () => {
+    expect(dayLabel(on(2026, 2, 15), NOW)).toBe("Today");
+  });
+
+  it("says Today for a message earlier in the same day", () => {
+    // The boundary is the calendar day, not twenty-four hours. Something said
+    // at one in the morning is still today at noon.
+    expect(dayLabel(new Date(2026, 2, 15, 1, 0).getTime(), NOW)).toBe("Today");
+  });
+
+  it("says Yesterday for the day before", () => {
+    expect(dayLabel(on(2026, 2, 14), NOW)).toBe("Yesterday");
+  });
+
+  it("says the weekday inside the last week", () => {
+    const at = on(2026, 2, 10);
+
+    expect(dayLabel(at, NOW)).toBe(
+      new Date(at).toLocaleDateString(undefined, { weekday: "long" }),
+    );
+    // A weekday and nothing else. The date proper starts once a weekday stops
+    // being enough to place it.
+    expect(dayLabel(at, NOW)).not.toMatch(/\d/);
+  });
+
+  it("says the whole date beyond that", () => {
+    const at = on(2026, 1, 3);
+
+    expect(dayLabel(at, NOW)).toBe(
+      new Date(at).toLocaleDateString(undefined, {
+        weekday: "long",
+        day: "numeric",
+        month: "long",
+      }),
+    );
+  });
+
+  it("drops the year when it is the current one", () => {
+    expect(dayLabel(on(2026, 1, 3), NOW)).not.toContain("2026");
+  });
+
+  it("says the whole date for a message dated ahead of this clock", () => {
+    // `origin_server_ts` is the homeserver's clock, not this machine's, so a
+    // local clock a day behind makes the newest message tomorrow. A weekday
+    // would read as last week; the date says what it actually claims.
+    const at = on(2026, 2, 17);
+
+    expect(dayLabel(at, NOW)).toBe(
+      new Date(at).toLocaleDateString(undefined, {
+        weekday: "long",
+        day: "numeric",
+        month: "long",
+      }),
+    );
+  });
+
+  it("says the year when it is not", () => {
+    expect(dayLabel(on(2025, 10, 20), NOW)).toContain("2025");
+  });
+});
+
+describe("drawing the day", () => {
+  /** Draw them as a room does, which is the only caller that asks for days. */
+  function drawWithDays(messages: Message[], newFrom?: string) {
+    return render(
+      <MessageGroups
+        groups={group(messages)}
+        names={{ [ADA]: "Ada", [BOB]: "Bob" }}
+        roomId={GENERAL}
+        selfId={BOB}
+        known={known(messages)}
+        onAbout={vi.fn()}
+        newDay={firstOfEachDay(messages)}
+        newFrom={newFrom}
+      />,
+    );
+  }
+
+  it("draws a separator above the first message of a new day", () => {
+    const { container } = drawWithDays([
+      said("$1", ADA, "one", LATE),
+      said("$2", BOB, "two", JUST_AFTER),
+    ]);
+
+    expect(container.querySelectorAll("[data-day-line]")).toHaveLength(2);
+    expect(screen.getByText(dayLabel(JUST_AFTER))).toBeVisible();
+  });
+
+  it("draws it inside a group that straddles midnight", () => {
+    // One person, one group, and the line still has to land on the second
+    // message rather than above the pair of them.
+    const { container } = drawWithDays([
+      said("$1", ADA, "one", LATE),
+      said("$2", ADA, "two", JUST_AFTER),
+    ]);
+
+    expect(container.querySelectorAll("article")).toHaveLength(1);
+    expect(container.querySelectorAll("[data-day-line]")).toHaveLength(2);
+  });
+
+  it("draws the date above the new messages line when both land together", () => {
+    // The day is the larger container and the unread mark belongs inside the
+    // day it falls in, so the order on the page is date first.
+    const { container } = drawWithDays(
+      [said("$1", ADA, "one", LATE), said("$2", ADA, "two", JUST_AFTER)],
+      "$2",
+    );
+
+    const lines = [
+      ...container.querySelectorAll("[data-day-line], [data-unread-line]"),
+    ];
+
+    expect(lines.at(-2)).toHaveAttribute("data-day-line");
+    expect(lines.at(-1)).toHaveAttribute("data-unread-line");
+  });
+
+  it("draws nothing when no day set is passed, as a thread panel does", () => {
+    const { container } = draw([
+      said("$1", ADA, "one", LATE),
+      said("$2", BOB, "two", JUST_AFTER),
+    ]);
+
+    expect(container.querySelectorAll("[data-day-line]")).toHaveLength(0);
   });
 });
 

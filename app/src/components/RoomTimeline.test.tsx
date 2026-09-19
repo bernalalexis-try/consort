@@ -780,6 +780,21 @@ describe("RoomTimeline", () => {
     expect(screen.getByText("New messages")).toBeInTheDocument();
   });
 
+  it("separates the days a room was talked in", async () => {
+    // The wiring, rather than the rule, which `MessageGroups.test.tsx` pins.
+    // Local constructors, because the boundary is the local calendar day.
+    await pane();
+
+    await arrive(
+      timeline([
+        said("$1", ADA, "late", new Date(2026, 0, 1, 23, 58).getTime()),
+        said("$2", BOB, "early", new Date(2026, 0, 2, 0, 1).getTime()),
+      ]),
+    );
+
+    expect(document.querySelectorAll("[data-day-line]")).toHaveLength(2);
+  });
+
   it("draws no line in a room with nothing new in it", async () => {
     await pane();
 

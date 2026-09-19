@@ -301,13 +301,23 @@
   Always drawn, not revealed on hover. #54 asked for Element's treatment and
   said what it thought of the other one: a time that appears under the pointer
   is a time nobody can scan, and scanning is the whole of what it is for.
+
+  Smaller than the rest of the room and no dimmer, though #68 asked for both.
+  `--text-muted` on `--surface-base` measures 4.22:1, which is already under
+  the 4.5:1 a piece of text this size is held to, and a timestamp is
+  information rather than decoration. There is no room left to darken into:
+  the first value that clears 4.5:1 is about `oklch(62%)`, which is brighter
+  than the colour here rather than darker. Size carries the quieting on its
+  own until #75 settles the type and contrast scale for the whole
+  application; darkening first would ship a regression into the week before
+  the accessibility work lands.
 */
 .timeline__message-at {
   position: absolute;
   top: 0;
   right: calc(100% + var(--space-3));
   color: var(--text-muted);
-  font-size: var(--text-xs);
+  font-size: var(--text-2xs);
   font-variant-numeric: tabular-nums;
   line-height: calc(var(--text-base) * 1.5);
   white-space: nowrap;
@@ -1421,5 +1431,46 @@
 }
 
 .timeline__unread-said {
+  flex: none;
+}
+
+/*
+  The day the messages under it were said.
+
+  The same construction as the line above, for the same reason: a bare rule in
+  a conversation is a divider and reads as one, and the words are what make it
+  a place. Full bleed across the message column rather than indented to the
+  text, because what it separates is everything above from everything below.
+
+  Quiet where that one is loud. A `--line-subtle` rule and muted words, not
+  the danger red: the red says this is where you stopped, there is one of it in
+  a room, and a second coloured rule running through the history would take
+  that away from it. Sentence case and no tracking for the same reason, where
+  the unread line is uppercase.
+
+  Ruled on both sides with the words centred, which is what tells the two
+  apart at a glance: a date is a heading over the day below it, and "New
+  messages" is a label on the conversation that follows, hence its short left
+  rule and long right one.
+*/
+.timeline__day {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin: var(--space-3) 0;
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  font-weight: 600;
+}
+
+.timeline__day::before,
+.timeline__day::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--line-subtle);
+}
+
+.timeline__day-said {
   flex: none;
 }

@@ -154,6 +154,25 @@ describe("ThreadPanel", () => {
     expect(screen.getByText("Consort")).toBeVisible();
   });
 
+  it("separates no days, however far apart the root and its replies are", async () => {
+    // A thread is one conversation read as a unit. A root from last month
+    // with today's replies under it is the ordinary case, and a line between
+    // them would be drawn almost every time the panel opened.
+    await opened({
+      ...OPEN,
+      root: said(
+        "$root:example.org",
+        "what shall we call it",
+        new Date(2026, 0, 1, 9, 0).getTime(),
+      ),
+      messages: [
+        said("$a:example.org", "Consort", new Date(2026, 1, 3, 9, 0).getTime()),
+      ],
+    });
+
+    expect(document.querySelectorAll("[data-day-line]")).toHaveLength(0);
+  });
+
   it("shuts when the close control is pressed", async () => {
     await opened();
 
