@@ -4,8 +4,8 @@ Target is 90% or better, and the suite currently clears it on both sides.
 
 | | Lines | Tests |
 |---|---|---|
-| Rust | 93.5% | 1478 |
-| Frontend | 97.2% | 869 |
+| Rust | 93.5% | 1517 |
+| Frontend | 97.2% | 931 |
 
 Run them:
 

@@ -327,6 +327,25 @@ function CopiedIcon() {
   );
 }
 
+/** A pencil: change what this says. */
+function EditIcon() {
+  return (
+    <svg
+      className="timeline__action-glyph"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M17 3a2.8 2.8 0 0 1 4 4L7.5 20.5 2 22l1.5-5.5z" />
+      <path d="m15 5 4 4" />
+    </svg>
+  );
+}
+
 function ThreadIcon() {
   return (
     <svg
@@ -382,6 +401,28 @@ function DaySeparator({ label }: { label: string }) {
 }
 
 /**
+ * Whether the reader could correct this message, if a caller offers the way.
+ *
+ * Their own, and one of the three kinds an edit can replace. The list is not a
+ * subset of what the interface can draw: it is exactly what `facts::replacement`
+ * in Rust reads back out, so a control never appears where pressing it would
+ * send a correction no client would fold.
+ *
+ * An attachment is the case worth naming. An edit carries replacement text,
+ * and the SDK would happily build one that swaps a picture for a sentence; the
+ * caption is the thing somebody would mean to change, and there is no surface
+ * for that yet.
+ */
+export function correctable(message: Message, selfId: string): boolean {
+  return (
+    message.sender === selfId &&
+    (message.kind === "text" ||
+      message.kind === "emote" ||
+      message.kind === "notice")
+  );
+}
+
+/**
  * The mark on a message its author has since corrected.
  *
  * Inside the body and at the end of the words rather than on a line of its
@@ -426,6 +467,7 @@ export function MessageGroups({
   onAbout,
   onOpenThread,
   onReply,
+  onEdit,
   onReact,
   onCopyLink,
   onGoTo,
@@ -504,6 +546,17 @@ export function MessageGroups({
    * one meaning.
    */
   onReply?: (message: Message) => void;
+  /**
+   * Correct a message this account sent.
+   *
+   * The whole message rather than its ID, because the composer opens on what
+   * it currently says and an ID alone cannot fill the box.
+   *
+   * The control is drawn only where [`correctable`] says it can be, which is
+   * the reader's own plain-text messages. Absent inside a thread panel, which
+   * has no composer mode for an edit.
+   */
+  onEdit?: (message: Message) => void;
   /**
    * React to a message, or take a reaction back.
    *
@@ -926,6 +979,18 @@ export function MessageGroups({
                           in it takes focus.
                         */}
                         <div className="timeline__actions">
+                          {onEdit !== undefined &&
+                            correctable(message, selfId) && (
+                              <button
+                                type="button"
+                                className="timeline__action"
+                                aria-label="Edit"
+                                title="Edit"
+                                onClick={() => onEdit(message)}
+                              >
+                                <EditIcon />
+                              </button>
+                            )}
                           {onReply !== undefined && (
                             <button
                               type="button"

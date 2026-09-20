@@ -32,6 +32,7 @@ import {
   timelinePresent,
   timelineReact,
   timelineReply,
+  timelineEdit,
   timelineSend,
   timelineTyping,
   timelineUnreact,
@@ -44,6 +45,7 @@ import {
 } from "../lib/api";
 import {
   MessageGroups,
+  correctable,
   ReplyIcon,
   firstOfEachDay,
   firstUnread,
@@ -129,6 +131,32 @@ function PaperclipIcon({ className }: { className?: string }) {
       aria-hidden="true"
     >
       <path d="M21 12.5 12.9 20.6a5 5 0 0 1-7.1-7.1l8.5-8.5a3.3 3.3 0 0 1 4.7 4.7l-8.5 8.5a1.7 1.7 0 0 1-2.4-2.4l7.8-7.8" />
+    </svg>
+  );
+}
+
+/**
+ * The mark on the line above the box, when the box is correcting a message.
+ *
+ * The same pencil the action row draws, at the size the line above the box
+ * uses. Here rather than imported from `MessageGroups` for the reason the
+ * paperclip is here: that file's glyphs are sized and coloured for the hover
+ * row over a message, and this one is a label on the composer.
+ */
+function EditingIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M17 3a2.8 2.8 0 0 1 4 4L7.5 20.5 2 22l1.5-5.5z" />
+      <path d="m15 5 4 4" />
     </svg>
   );
 }
@@ -224,6 +252,29 @@ export function RoomTimeline({
     name who wrote it.
   */
   const [answering, setAnswering] = useState<Message | null>(null);
+  /*
+    Which message the composer is correcting, or none. The whole message for
+    the reason above: the line above the box quotes what is being changed, and
+    the box opens on what it currently says.
+
+    Mutually exclusive with `answering` by construction, because the two are
+    one box with one Send and both set at once is a composer with two things
+    to do and no way to say which.
+  */
+  const [editing, setEditing] = useState<Message | null>(null);
+  /*
+    The same, reachable from the drop listener below. That listener is
+    installed once and never re-installed, because tearing a Tauri listener
+    down and putting it back is a window of dropped files that reach nobody,
+    so what it closed over is the state at mount. This is what lets a dropped
+    file end an edit the way a picked one does.
+
+    Written during the render rather than from an effect, which is safe here
+    because nothing reads it during one: every reader is an event handler or
+    that listener, both of which run after the commit.
+  */
+  const editingNow = useRef<Message | null>(null);
+  editingNow.current = editing;
   /* The message whose address has just gone to the clipboard, or none. */
   const [copied, setCopied] = useState<string | null>(null);
   /*
@@ -410,13 +461,12 @@ export function RoomTimeline({
       setProblem(
         files.length > 1 ? "Consort sends one attachment at a time." : null,
       );
-      setStaged({
+      stage({
         kind: "file",
         name: first.name,
         size: first.size,
         path: first.path,
       });
-      draftBox.current?.focus();
     });
 
     return () => {
@@ -835,10 +885,83 @@ export function RoomTimeline({
     void timelineTyping(channel.id, true).catch(() => {});
   }
 
+  /**
+   * Put one attachment in the composer, ending an edit if one was open.
+   *
+   * An edit replaces the text of a message that already exists. It cannot
+   * carry a file, and there is one box with one Send, so a composer holding
+   * both has two things to do and no way to say which; without this the
+   * attachment is the one that would go, because [`send`] reaches it first,
+   * and the correction would be abandoned with nothing said about it.
+   *
+   * Exclusive with an edit and not with a reply. A picture can answer a
+   * message, and that is a thing somebody does on purpose.
+   */
+  function stage(attachment: Staged) {
+    stopEditing();
+    setStaged(attachment);
+    draftBox.current?.focus();
+  }
+
+  /**
+   * Put the composer back to an ordinary message.
+   *
+   * The box is emptied as well, unlike stopping a reply. What is in there is
+   * the old message rather than something somebody typed, so leaving it would
+   * put a copy of a sentence already in the room into the next send.
+   */
+  function stopEditing() {
+    // The ref rather than the state, so that the drop listener, which closed
+    // over the state at mount, still leaves the box alone when what is in it
+    // is a caption somebody typed rather than a message being corrected.
+    if (editingNow.current === null) return;
+    setEditing(null);
+    setDraft("");
+  }
+
   /** Answer this message, with the box ready for what comes next. */
   function reply(message: Message) {
     setAnswering(message);
+    setEditing(null);
     draftBox.current?.focus();
+  }
+
+  /**
+   * Correct this message, with the box opened on what it currently says.
+   *
+   * Opened on the sentence rather than empty, because almost every edit is one
+   * word in a sentence somebody otherwise meant. What goes back is the
+   * plaintext: `html` is what the sender's markdown became, and putting tags
+   * in the box would have somebody editing the rendering of their message.
+   */
+  function edit(message: Message) {
+    setEditing(message);
+    setAnswering(null);
+    // The other half of the rule [`stage`] states. A file chosen and then
+    // abandoned can be chosen again; an attachment sent instead of the
+    // correction somebody asked for cannot be unsent.
+    setStaged(null);
+    setDraft(message.body);
+    draftBox.current?.focus();
+  }
+
+  /**
+   * Correct the last thing this account said in what is loaded.
+   *
+   * What the up arrow does in an empty box. Newest first, and past anything an
+   * edit cannot replace: `correctable` in `MessageGroups` is the same rule the
+   * action row draws by, so the key reaches exactly the messages that have a
+   * control on them.
+   *
+   * The loaded window rather than the room, which matters only inside a window
+   * somebody jumped into. There it is the last thing they said in the part of
+   * the room they are looking at, which is the one the key could plausibly
+   * mean and the only one with a control beside it.
+   */
+  function editTheLast() {
+    const last = [...messages].reverse().find((one) => correctable(one, selfId));
+    if (last === undefined) return;
+    edit(last);
   }
 
   /**
@@ -872,13 +995,12 @@ export function RoomTimeline({
         // Null is the window closed without choosing, which is not a failure.
         if (chosen === null) return;
         setProblem(null);
-        setStaged({
+        stage({
           kind: "file",
           name: chosen.name,
           size: chosen.size,
           path: chosen.path,
         });
-        draftBox.current?.focus();
       })
       .catch((raw: unknown) => {
         setProblem(asCommandError(raw).message);
@@ -894,8 +1016,7 @@ export function RoomTimeline({
         // to put them in the box.
         if (shot === null) return;
         setProblem(null);
-        setStaged({ kind: "pasted", name: shot.name, size: shot.size });
-        draftBox.current?.focus();
+        stage({ kind: "pasted", name: shot.name, size: shot.size });
       })
       .catch((raw: unknown) => {
         setProblem(asCommandError(raw).message);
@@ -928,6 +1049,8 @@ export function RoomTimeline({
       // them back.
       if (staged !== null) {
         await sendStaged(staged);
+      } else if (editing !== null) {
+        await timelineEdit(channel.id, editing.id, draft);
       } else {
         await (answering === null
           ? timelineSend(channel.id, draft)
@@ -940,6 +1063,7 @@ export function RoomTimeline({
       setDraft("");
       setStaged(null);
       setAnswering(null);
+      setEditing(null);
       // Said, so no longer typing. Before the scroll rather than after it,
       // because the room should stop showing this name the moment the message
       // it was writing arrives.
@@ -1085,6 +1209,7 @@ export function RoomTimeline({
           openingId={opening}
           copiedId={copied}
           onReply={reply}
+          onEdit={edit}
           onCopyLink={copyLink}
           newFrom={newFrom}
           newDay={newDay}
@@ -1143,6 +1268,34 @@ export function RoomTimeline({
             className="timeline__answering-stop"
             aria-label="Stop replying"
             onClick={() => setAnswering(null)}
+          >
+            &times;
+          </button>
+        </div>
+      )}
+
+      {/*
+        Which message the box is about to change, above the box that changes
+        it. Drawn on the same terms as the reply line above, and never at the
+        same time as one: the two modes are exclusive and setting either clears
+        the other.
+
+        It quotes the message as it stands rather than as it will be. What the
+        box holds is the edit being written, and having both would be the same
+        sentence twice.
+      */}
+      {editing !== null && (
+        <div className="timeline__answering">
+          <EditingIcon className="timeline__answering-glyph" />
+          <span className="timeline__answering-who">Editing</span>
+          <span className="timeline__answering-said">
+            {previewOf(editing, nameOf)}
+          </span>
+          <button
+            type="button"
+            className="timeline__answering-stop"
+            aria-label="Stop editing"
+            onClick={stopEditing}
           >
             &times;
           </button>
@@ -1213,11 +1366,32 @@ export function RoomTimeline({
               clears the box rather than also shutting the thread panel
               listening on the window behind it.
             */
-            const composing = answering !== null || staged !== null;
+            const composing =
+              answering !== null || editing !== null || staged !== null;
             if (event.key === "Escape" && composing) {
               event.stopPropagation();
               setAnswering(null);
               setStaged(null);
+              stopEditing();
+              return;
+            }
+            /*
+              The binding everybody reaches for without thinking. Only in an
+              empty box, or it eats cursor movement in a paragraph somebody is
+              writing, and not while something is staged, where the box is the
+              caption for what is about to be sent rather than a draft.
+
+              Not prevented when it does nothing, so the key still moves the
+              cursor in the cases this passes over.
+            */
+            if (
+              event.key === "ArrowUp" &&
+              draft === "" &&
+              staged === null &&
+              editing === null
+            ) {
+              event.preventDefault();
+              editTheLast();
               return;
             }
             // Enter sends and Shift+Enter breaks the line, which is what every

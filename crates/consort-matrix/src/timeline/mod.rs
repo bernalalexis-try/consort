@@ -69,6 +69,7 @@ use std::collections::{HashMap, HashSet};
 use futures_util::StreamExt;
 use matrix_sdk::deserialized_responses::TimelineEvent;
 use matrix_sdk::room::MessagesOptions;
+use matrix_sdk::room::edit::{EditError, EditedContent};
 use matrix_sdk::ruma::api::Direction;
 use matrix_sdk::ruma::events::reaction::ReactionEventContent;
 use matrix_sdk::ruma::events::relation::Annotation;
@@ -1249,6 +1250,55 @@ pub async fn send_reply(
     );
 
     room_of(client, room_id)?.send(content).await?;
+    Ok(())
+}
+
+/// Correct a message this account sent.
+///
+/// A wrapper rather than an implementation. `Room::make_edit_event` builds the
+/// whole event: it refuses an edit of somebody else's message, carries the
+/// original's `m.mentions` forward so that correcting a typo does not silently
+/// unmention whoever was named, and writes both `m.new_content` and the `* `
+/// fallback body a client with no idea about edits draws.
+///
+/// It also reads the target event first, which is a round trip. An edit of a
+/// message old enough to have fallen out of the event cache can therefore fail
+/// on the fetch, before anything has been sent.
+///
+/// Nothing is returned and nothing is echoed, on the same terms as every other
+/// send here: the correction appears when the sync brings it back.
+pub async fn send_edit(client: &Client, room_id: &str, event_id: &str, body: &str) -> Result<()> {
+    // Before the fetch, so an empty box costs no round trip. Emptying the
+    // composer is also not how a message is deleted, and sending this would
+    // leave a blank line where a sentence was.
+    let content = written(body)?;
+    let target = event_id_of(event_id)?;
+    let room = room_of(client, room_id)?;
+
+    // Boxed, and it is load-bearing rather than tidy. `make_edit_event` reads
+    // the target event through the SDK's event cache first, and inlining that
+    // future makes this one deep enough that rustc gives up computing the
+    // layout of anything holding it. Under `-C instrument-coverage` it gives
+    // up sooner, so the failure shows up in CI's coverage job rather than in
+    // an ordinary build. One box here beats one at every call site.
+    let edit = Box::pin(room.make_edit_event(&target, EditedContent::RoomMessage(content.into())))
+        .await
+        .map_err(|error| match error {
+            // Its own variant, because it is the one failure here with
+            // something to say to a person. Everything else is a homeserver
+            // that would not answer, which `Error::Sdk` already has words for.
+            EditError::NotAuthor => Error::NotYourMessage {
+                event_id: event_id.to_owned(),
+            },
+            other => {
+                tracing::warn!(%other, %room_id, %event_id, "could not build the edit");
+                Error::NoSuchEvent {
+                    event_id: event_id.to_owned(),
+                }
+            }
+        })?;
+
+    room.send(edit).await?;
     Ok(())
 }
 

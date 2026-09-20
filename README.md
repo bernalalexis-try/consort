@@ -12,9 +12,10 @@ at whatever homeserver you already run.
 
 > **Status: early.** It signs you in and keeps you signed in, verifies itself,
 > draws your rooms, joins voice channels, and reads and writes text, threads,
-> replies, reactions and attachments, sending included. It marks what you have
-> not read, remembers where you stopped, and tells you when something arrives
-> while you are looking at something else. Editing a message is not built.
+> replies, reactions, attachments and edits, sending included. It marks what
+> you have not read, remembers where you stopped, and tells you when something
+> arrives while you are looking at something else. Deleting your own message is
+> not built.
 
 ---
 

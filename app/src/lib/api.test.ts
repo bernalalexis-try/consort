@@ -62,6 +62,7 @@ import {
   NO_TIMELINE,
   timelineCopyLink,
   timelineGoTo,
+  timelineEdit,
   timelineReact,
   timelineReply,
   timelineMarkRead,
@@ -346,6 +347,23 @@ describe("replies and links", () => {
       replyTo: "$said:example.org",
       sender: "@ada:example.org",
       body: "quite",
+    });
+  });
+
+  it("names the message being corrected and nothing about who sent it", async () => {
+    // No sender rides along, unlike a reply. Who wrote it is read off the
+    // target event in Rust, and taking the webview's word for it would be
+    // taking the webview's word for who may rewrite whom.
+    await timelineEdit(
+      "!general:example.org",
+      "$said:example.org",
+      "corrected",
+    );
+
+    expect(invoke).toHaveBeenCalledWith("timeline_edit", {
+      roomId: "!general:example.org",
+      eventId: "$said:example.org",
+      body: "corrected",
     });
   });
 

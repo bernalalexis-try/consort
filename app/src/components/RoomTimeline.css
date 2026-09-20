@@ -1137,12 +1137,15 @@
 }
 
 /*
-  What the next message will answer, above the box that writes it.
+  What the box is about to do to a message, above the box that does it: the
+  message a reply will answer, or the one an edit will change. One treatment
+  for both, because the two are one line in one place saying which message the
+  composer is pointed at, and never drawn at the same time as each other.
 
   It appears and disappears, which does move the conversation above it, and
   that is the difference between this and the typing line: this moves because
-  somebody pressed Reply, and a control that produces no visible change is a
-  control nobody can tell they used.
+  somebody pressed Reply or Edit, and a control that produces no visible change
+  is a control nobody can tell they used.
 */
 .timeline__answering {
   display: flex;

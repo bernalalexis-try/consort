@@ -1831,6 +1831,26 @@ export function timelineReply(
 }
 
 /**
+ * Correct a message this account sent.
+ *
+ * No sender rides along, unlike a reply. Who wrote the message is read off the
+ * target event in Rust before the edit is built, and it is what decides
+ * whether the edit is allowed at all; taking this side's word for it would be
+ * taking the webview's word for who may rewrite whom.
+ *
+ * Nothing is echoed. The correction appears when the sync brings it back,
+ * which is the path every other send here takes, so the old text is on screen
+ * for the round trip.
+ */
+export function timelineEdit(
+  roomId: string,
+  eventId: string,
+  body: string,
+): Promise<void> {
+  return invoke<void>("timeline_edit", { roomId, eventId, body });
+}
+
+/**
  * A file somebody chose, before anything has been read of it.
  *
  * Mirrors `crate::attaching::Chosen`. There are no bytes here on purpose:

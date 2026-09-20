@@ -105,6 +105,16 @@ pub enum Error {
     #[error("a message with no text in it")]
     EmptyMessage,
 
+    /// An edit of a message this account did not send.
+    ///
+    /// The homeserver would refuse it and every other client would ignore it,
+    /// which is what stops one person in a room rewriting another's words.
+    /// The interface offers no control on somebody else's message, so this is
+    /// the second of two locks; it is the one that still holds if a later
+    /// change to the action row gets the first one wrong.
+    #[error("{event_id} was not sent by this account, so it cannot be edited")]
+    NotYourMessage { event_id: String },
+
     /// An attachment larger than this build will carry into the webview.
     ///
     /// The bytes are held whole on both sides of the IPC boundary for a
@@ -250,6 +260,9 @@ impl Error {
                     .to_owned()
             }
             Self::EmptyMessage => "There is nothing to send.".to_owned(),
+            Self::NotYourMessage { .. } => {
+                "Only the person who sent a message can edit it.".to_owned()
+            }
             Self::MediaTooLarge { .. } => {
                 "That attachment is too large for Consort to show.".to_owned()
             }
@@ -412,6 +425,9 @@ mod tests {
             },
             Error::NoSuchUser {
                 user_id: "not a user".to_owned(),
+            },
+            Error::NotYourMessage {
+                event_id: "$theirs:example.org".to_owned(),
             },
             Error::MediaTooLarge {
                 bytes: 40_000_000,
