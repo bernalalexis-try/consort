@@ -1095,3 +1095,28 @@ describe("adding another reaction", () => {
     );
   });
 });
+
+describe("a message that was edited", () => {
+  it("says so", () => {
+    // A correction drawn as though it were what somebody first wrote is a
+    // quiet way of putting words in their mouth.
+    draw([said("$1", ADA, "corrected", NOON, { edited: true })]);
+
+    expect(screen.getByText("(edited)")).toBeInTheDocument();
+  });
+
+  it("says nothing on a message nobody edited", () => {
+    draw([said("$1", ADA, "as it was sent")]);
+
+    expect(screen.queryByText("(edited)")).not.toBeInTheDocument();
+  });
+
+  it("puts the mark inside the words rather than on a line of its own", () => {
+    // Inline, because a row of its own would space the conversation out by
+    // the height of a line on every message anybody has ever corrected.
+    draw([said("$1", ADA, "corrected", NOON, { edited: true })]);
+
+    const body = screen.getByText("corrected").closest(".timeline__body");
+    expect(body).toContainElement(screen.getByText("(edited)"));
+  });
+});

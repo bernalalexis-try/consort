@@ -382,6 +382,27 @@ function DaySeparator({ label }: { label: string }) {
 }
 
 /**
+ * The mark on a message its author has since corrected.
+ *
+ * Inside the body and at the end of the words rather than on a line of its
+ * own. A row would space the conversation out by a line on every message
+ * anybody has ever fixed a typo in, and what it says is a footnote to the
+ * sentence rather than a statement beside it.
+ *
+ * What it said before is deliberately not offered. Nothing here holds it: the
+ * superseded text never crosses the IPC, because a client that kept a copy of
+ * every sentence somebody took back is a client people would stop correcting
+ * themselves in.
+ */
+function EditedMark() {
+  return (
+    <span className="timeline__edited" title="This message was edited">
+      (edited)
+    </span>
+  );
+}
+
+/**
  * A run of grouped messages, drawn.
  *
  * Its own component because a thread panel draws the same thing beside the
@@ -789,6 +810,7 @@ export function MessageGroups({
                                 ) : (
                                   <FormattedBody html={message.html} />
                                 )}
+                                {message.edited && <EditedMark />}
                               </div>
                             )}
                           </div>
@@ -827,6 +849,7 @@ export function MessageGroups({
                             ) : (
                               <FormattedBody html={message.html} />
                             )}
+                            {message.edited && <EditedMark />}
                           </div>
                         )}
                         {message.thread !== undefined &&

@@ -324,6 +324,29 @@
 }
 
 /*
+  The mark on a message somebody has corrected.
+
+  Smaller and quieter than the words, and inline with them: it is a footnote to
+  the sentence rather than a statement of its own, and a mark that competed
+  with the message would make every typo somebody fixed the loudest thing in
+  the room.
+
+  Quieted by size as well as by colour, for the reason the timestamp above is:
+  `--text-muted` on `--surface-base` is already at 4.22:1 and there is nothing
+  left to darken into until #75 settles the contrast scale.
+*/
+.timeline__edited {
+  margin-left: var(--space-1);
+  color: var(--text-muted);
+  font-size: var(--text-2xs);
+  /*
+    So a correction of a long paragraph does not leave the mark stranded
+    alone on a line of its own, which is the row this deliberately is not.
+  */
+  white-space: nowrap;
+}
+
+/*
   What can be done to a message, over its top right corner.
 
   Out of the flow rather than in it, so that appearing does not move the

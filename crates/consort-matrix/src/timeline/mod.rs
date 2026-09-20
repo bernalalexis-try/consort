@@ -46,6 +46,7 @@
 mod answering;
 mod around;
 pub mod dto;
+mod edits;
 pub(crate) mod facts;
 mod history;
 mod media;
@@ -55,6 +56,7 @@ mod sending;
 mod thread;
 
 pub use dto::{Media, Message, MessageKind, Reaction, Thread, ThreadSummary, Timeline, Typing};
+pub use edits::Edits;
 pub use history::History;
 pub use media::{Attachment, MAX_BYTES, bytes, media};
 pub use permalink::permalink;
@@ -453,6 +455,15 @@ struct Loaded {
     /// for a message that may not be loaded, may be loaded later by a page, or
     /// may never be. Merged onto the messages when a timeline is published.
     reactions: Reactions,
+    /// The corrections people have made, for every message replaced in
+    /// anything this watcher has seen.
+    ///
+    /// Beside the history for the reason the reactions are, and for one more:
+    /// an edit is a different event from the message it corrects, so writing
+    /// the new text into the history would be undone the moment a room key
+    /// re-read the original. Merged onto the messages when a timeline is
+    /// published.
+    edits: Edits,
     /// The events this session could not read, by event ID.
     ///
     /// Held as the JSON they arrived as, which is what `decrypt_event` takes,
@@ -529,6 +540,7 @@ impl Loaded {
             open: None,
             history: History::new(),
             reactions: Reactions::new(),
+            edits: Edits::new(),
             waiting: HashMap::new(),
             answered: HashMap::new(),
             from: None,
@@ -797,11 +809,13 @@ impl Loaded {
         })
     }
 
-    /// Take note of the reactions and the redactions in one batch.
+    /// Take note of everything in one batch that is not a message.
     ///
-    /// Reports whether anything drawn changed. Separate from [`Self::read`]
-    /// because these are not messages and never become any: an annotation is
-    /// something *on* a message, and a redaction can remove either.
+    /// The reactions, the corrections and the redactions. Reports whether
+    /// anything drawn changed. Separate from [`Self::read`] because none of
+    /// these is a message and none of them ever becomes one: a reaction and an
+    /// edit are both something *about* a message, and a redaction can remove
+    /// any of the three.
     fn annotations(&mut self, events: &[TimelineEvent]) -> bool {
         let mut changed = false;
         for event in events {
@@ -811,11 +825,28 @@ impl Loaded {
                     .added(&one.event_id, &one.target, &one.key, &one.sender);
                 continue;
             }
+            if let Some(one) = facts::replacement(event) {
+                // Taken whoever sent it. Whether they wrote the message being
+                // replaced is a comparison against the original, which is
+                // regularly not loaded here, and `Edits::latest_on` is where
+                // it can be made.
+                changed |= self.edits.added(
+                    &one.event_id,
+                    &one.target,
+                    &one.sender,
+                    one.at,
+                    one.body,
+                    one.html,
+                );
+                continue;
+            }
             if let Some(gone) = facts::redaction(event) {
                 // Whichever it was. A redacted message stops being a message
                 // and is dropped from the history; a redacted annotation is
-                // somebody taking a reaction back.
+                // somebody taking a reaction back, and a redacted edit is
+                // somebody taking a correction back.
                 changed |= self.reactions.redacted(&gone);
+                changed |= self.edits.redacted(&gone);
                 changed |= self.history.forget(&gone);
             }
         }
@@ -996,13 +1027,15 @@ impl Loaded {
         changed
     }
 
-    /// The messages, each carrying what people have reacted to it with.
+    /// The messages, each carrying what people have reacted to it with and
+    /// whatever its author has since corrected it to say.
     ///
-    /// Merged here rather than held on the message, because the two change for
-    /// different reasons: a message is replaced when a room key opens it, and
-    /// what is on it changes when somebody presses a pill. Keeping the
-    /// reactions on the message would mean every re-read had to carry them
-    /// forward by hand, and the one that forgot would silently clear them.
+    /// Merged here rather than held on the message, because these change for
+    /// different reasons than the message does: a message is replaced when a
+    /// room key opens it, what is on it changes when somebody presses a pill,
+    /// and what it says changes when its author corrects it. Keeping any of
+    /// them on the message would mean every re-read had to carry them forward
+    /// by hand, and the one that forgot would silently drop them.
     fn drawn(&self, messages: &[Message]) -> Vec<Message> {
         let me = self.me.as_deref();
         messages
@@ -1010,14 +1043,41 @@ impl Loaded {
             .map(|message| {
                 let reactions = self.reactions.on(&message.id, me);
                 if reactions.is_empty() {
-                    return message.clone();
+                    return self.corrected(message);
                 }
                 Message {
                     reactions,
-                    ..message.clone()
+                    ..self.corrected(message)
                 }
             })
             .collect()
+    }
+
+    /// One message as its author has since corrected it, if they have.
+    ///
+    /// The sender check is [`Edits::latest_on`]'s, made here rather than when
+    /// the edit arrived because here is the first place the original is in
+    /// hand to compare against.
+    fn corrected(&self, message: &Message) -> Message {
+        let Some(edit) = self.edits.latest_on(&message.id, &message.sender) else {
+            return message.clone();
+        };
+
+        Message {
+            // Both, always, out of the edit alone. Merging field by field is
+            // how a message edited down to plain text keeps the formatting it
+            // had: the new sentence would come from `body` and the old one
+            // from `html`, and `FormattedBody` draws the second.
+            body: edit.body.clone(),
+            html: edit.html.clone(),
+            edited: true,
+            // `at` is deliberately untouched, and it is the line a later
+            // reader will be tempted to fix. A message keeps the moment it was
+            // said: the date separators are keyed off it, so a message from
+            // last Tuesday corrected this morning would otherwise jump to
+            // today and take its separator with it.
+            ..message.clone()
+        }
     }
 
     /// The messages these replies name that are not among them.
@@ -1030,6 +1090,12 @@ impl Loaded {
     /// Reactions are deliberately not merged onto these. The row above a reply
     /// draws a name and a line of what was said; pills belong on the message
     /// itself, wherever it is drawn.
+    ///
+    /// Edits are, and the two are different for a reason rather than by
+    /// oversight. A pill missing from a quoted row is something not drawn; the
+    /// pre-edit text in a quoted row is a wrong sentence attributed to
+    /// somebody by name, which is the whole defect this fold exists to fix,
+    /// one layer down.
     fn answers(&self, messages: &[Message]) -> Vec<Message> {
         let held: HashSet<&str> = messages.iter().map(|message| message.id.as_str()).collect();
         let mut answers: Vec<Message> = Vec::new();
@@ -1042,7 +1108,7 @@ impl Loaded {
                 continue;
             }
             if let Some(Some(answered)) = self.answered.get(id) {
-                answers.push(answered.clone());
+                answers.push(self.corrected(answered));
             }
         }
         answers

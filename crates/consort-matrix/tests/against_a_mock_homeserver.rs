@@ -5277,6 +5277,365 @@ mod timeline {
             assert!(at_rest(&reports).unwrap().answered.is_empty());
         }
     }
+
+    /// An edit arriving for a message the room is drawing.
+    ///
+    /// The half of #74 that is a correctness fix rather than a feature: before
+    /// this, every one of these was dropped and Consort kept showing a room
+    /// the sentence its author had already corrected.
+    mod edits {
+        use super::*;
+        use matrix_sdk::test_utils::mocks::RoomRelationsResponseTemplate;
+
+        const ORIGINAL: &str = "$original:example.org";
+
+        /// An edit of `target`, as `/messages` hands one over.
+        fn correcting(id: &str, target: &str, body: &str, at: u64) -> serde_json::Value {
+            by(id, target, body, at, OTHER)
+        }
+
+        /// The same, from whoever `sender` is.
+        fn by(id: &str, target: &str, body: &str, at: u64, sender: &str) -> serde_json::Value {
+            serde_json::json!({
+                "type": "m.room.message",
+                "event_id": id,
+                "room_id": ROOM,
+                "sender": sender,
+                "origin_server_ts": at,
+                "content": {
+                    "msgtype": "m.text",
+                    // The `* ` fallback every client writes, and the thing
+                    // nothing may read: a client that drew this would put an
+                    // asterisk in front of every correction in the room.
+                    "body": format!("* {body}"),
+                    "m.new_content": { "msgtype": "m.text", "body": body },
+                    "m.relates_to": { "rel_type": "m.replace", "event_id": target },
+                },
+            })
+        }
+
+        /// A redaction of `target`, as a sync delivers one.
+        fn redacting(id: &str, target: &str) -> serde_json::Value {
+            serde_json::json!({
+                "type": "m.room.redaction",
+                "event_id": id,
+                "sender": OTHER,
+                "origin_server_ts": 9_700,
+                "redacts": target,
+                "content": {},
+            })
+        }
+
+        /// A reply naming `to`, which nothing in the room has to be holding.
+        fn answering(id: &str, body: &str, at: u64, to: &str) -> serde_json::Value {
+            serde_json::json!({
+                "type": "m.room.message",
+                "event_id": id,
+                "room_id": ROOM,
+                "sender": OTHER,
+                "origin_server_ts": at,
+                "content": {
+                    "msgtype": "m.text",
+                    "body": body,
+                    "m.relates_to": { "m.in_reply_to": { "event_id": to } },
+                },
+            })
+        }
+
+        /// Answer `/event` with one message.
+        async fn mount_event(server: &MatrixMockServer, value: serde_json::Value) {
+            server
+                .mock_room_event()
+                .expect_any_access_token()
+                .ok(
+                    matrix_sdk::deserialized_responses::TimelineEvent::from_plaintext(
+                        raw(value).cast_unchecked(),
+                    ),
+                )
+                .mount()
+                .await;
+        }
+
+        /// Answer `/relations` with `chunk`, for the thread panel.
+        async fn mount_relations(server: &MatrixMockServer, chunk: Vec<serde_json::Value>) {
+            server
+                .mock_room_relations()
+                .expect_any_access_token()
+                .ok(RoomRelationsResponseTemplate::default()
+                    .events(chunk.into_iter().map(raw).collect::<Vec<_>>()))
+                .mount()
+                .await;
+        }
+
+        /// A room whose one message has been corrected, watched and drawn.
+        async fn corrected(
+            server: &MatrixMockServer,
+            client: matrix_sdk::Client,
+        ) -> (timeline::Watch, Arc<std::sync::Mutex<Vec<Timeline>>>) {
+            // Newest first, which is what a backwards page answers with.
+            paginating(
+                server,
+                vec![
+                    correcting("$edit:example.org", ORIGINAL, "corrected", 5_000),
+                    said(ORIGINAL, "the typo", 1_000),
+                ],
+                None,
+            )
+            .await;
+            let (seen, sink) = recorder::<Timeline>();
+            let watch = timeline::watch(client, ROOM, sink, |_| {}, |_| {});
+            wait_until(&seen, |reports| {
+                settled(reports).is_some_and(|report| !report.messages.is_empty())
+            })
+            .await;
+            (watch, seen)
+        }
+
+        #[tokio::test]
+        async fn a_message_that_was_edited_is_drawn_as_the_edit_says() {
+            let server = MatrixMockServer::new().await;
+            let (_dir, client) = signed_in(&server).await;
+            server
+                .sync_joined_room(&client, ruma::room_id!("!general:example.org"))
+                .await;
+
+            let (watch, seen) = corrected(&server, client).await;
+            let reports = seen.lock().unwrap().clone();
+            drop(watch);
+
+            let room = settled(&reports).unwrap();
+            assert_eq!(
+                bodies(room),
+                vec!["corrected"],
+                "the edit is the message now, and the sentence it replaced is not a second line"
+            );
+        }
+
+        #[tokio::test]
+        async fn an_edited_message_says_that_it_was_edited() {
+            // Without the mark, a correction is indistinguishable from what
+            // somebody originally wrote, which is a quiet way of putting words
+            // in their mouth.
+            let server = MatrixMockServer::new().await;
+            let (_dir, client) = signed_in(&server).await;
+            server
+                .sync_joined_room(&client, ruma::room_id!("!general:example.org"))
+                .await;
+
+            let (watch, seen) = corrected(&server, client).await;
+            let reports = seen.lock().unwrap().clone();
+            drop(watch);
+
+            assert!(settled(&reports).unwrap().messages[0].edited);
+        }
+
+        #[tokio::test]
+        async fn a_message_nobody_edited_is_not_marked() {
+            let server = MatrixMockServer::new().await;
+            let (_dir, client) = signed_in(&server).await;
+            server
+                .sync_joined_room(&client, ruma::room_id!("!general:example.org"))
+                .await;
+            paginating(&server, vec![said(ORIGINAL, "the typo", 1_000)], None).await;
+
+            let (seen, sink) = recorder::<Timeline>();
+            let watch = timeline::watch(client, ROOM, sink, |_| {}, |_| {});
+            let reports = wait_until(&seen, |reports| {
+                settled(reports).is_some_and(|report| !report.messages.is_empty())
+            })
+            .await;
+            drop(watch);
+
+            assert!(!settled(&reports).unwrap().messages[0].edited);
+        }
+
+        #[tokio::test]
+        async fn an_edit_does_not_move_the_message_it_replaces() {
+            // The edit is stamped four seconds later, and the message stays
+            // where the conversation put it. Date separators are keyed off
+            // this, so a message from last Tuesday corrected this morning
+            // would otherwise jump to today and take its separator with it.
+            let server = MatrixMockServer::new().await;
+            let (_dir, client) = signed_in(&server).await;
+            server
+                .sync_joined_room(&client, ruma::room_id!("!general:example.org"))
+                .await;
+
+            let (watch, seen) = corrected(&server, client).await;
+            let reports = seen.lock().unwrap().clone();
+            drop(watch);
+
+            assert_eq!(settled(&reports).unwrap().messages[0].at, 1_000);
+        }
+
+        #[tokio::test]
+        async fn an_edit_from_somebody_who_did_not_write_the_message_is_not_drawn() {
+            // Named for the attack rather than for the mechanism. An
+            // `m.replace` is an ordinary event anybody in the room can send,
+            // and a client that folded one without checking lets any member
+            // rewrite any other member's words.
+            let server = MatrixMockServer::new().await;
+            let (_dir, client) = signed_in(&server).await;
+            server
+                .sync_joined_room(&client, ruma::room_id!("!general:example.org"))
+                .await;
+            paginating(
+                &server,
+                vec![
+                    by(
+                        "$forged:example.org",
+                        ORIGINAL,
+                        "words nobody said",
+                        5_000,
+                        "@mallory:example.org",
+                    ),
+                    said(ORIGINAL, "the typo", 1_000),
+                ],
+                None,
+            )
+            .await;
+
+            let (seen, sink) = recorder::<Timeline>();
+            let watch = timeline::watch(client, ROOM, sink, |_| {}, |_| {});
+            let reports = wait_until(&seen, |reports| {
+                settled(reports).is_some_and(|report| !report.messages.is_empty())
+            })
+            .await;
+            drop(watch);
+
+            let room = settled(&reports).unwrap();
+            assert_eq!(bodies(room), vec!["the typo"]);
+            assert!(!room.messages[0].edited);
+        }
+
+        #[tokio::test]
+        async fn redacting_an_edit_puts_the_original_back() {
+            // Somebody corrected a message and then took the correction back.
+            // What they meant is the sentence they first sent.
+            let server = MatrixMockServer::new().await;
+            let (_dir, client) = signed_in(&server).await;
+            server
+                .sync_joined_room(&client, ruma::room_id!("!general:example.org"))
+                .await;
+            syncing(
+                &server,
+                vec![redacting("$gone:example.org", "$edit:example.org")],
+            )
+            .await;
+            let (watch, seen) = corrected(&server, client.clone()).await;
+
+            let pump = sync::start(client, |_| {});
+            let reports = wait_until(&seen, |reports| {
+                settled(reports).is_some_and(|report| bodies(report) == vec!["the typo"])
+            })
+            .await;
+            pump.abort();
+            drop(watch);
+
+            let room = settled(&reports).unwrap();
+            assert_eq!(bodies(room), vec!["the typo"]);
+            assert!(!room.messages[0].edited);
+        }
+
+        #[tokio::test]
+        async fn the_row_above_a_reply_shows_the_edit_rather_than_the_original() {
+            // The defect this whole issue exists to fix, one layer down: a
+            // quoted row drawing the pre-edit text is a wrong sentence
+            // attributed to somebody by name.
+            let server = MatrixMockServer::new().await;
+            let (_dir, client) = signed_in(&server).await;
+            server
+                .sync_joined_room(&client, ruma::room_id!("!general:example.org"))
+                .await;
+            paginating(
+                &server,
+                vec![
+                    answering("$reply:example.org", "quite", 9_000, ORIGINAL),
+                    correcting("$edit:example.org", ORIGINAL, "corrected", 5_000),
+                ],
+                None,
+            )
+            .await;
+            // Not in the page, so the row is built from a lookup, which is the
+            // case the fold has to reach as well.
+            mount_event(&server, said(ORIGINAL, "the typo", 1_000)).await;
+
+            let (seen, sink) = recorder::<Timeline>();
+            let watch = timeline::watch(client, ROOM, sink, |_| {}, |_| {});
+            let reports = wait_until(&seen, |reports| {
+                settled(reports).is_some_and(|report| !report.answered.is_empty())
+            })
+            .await;
+            drop(watch);
+
+            let answered = &settled(&reports).unwrap().answered[0];
+            assert_eq!(answered.id, ORIGINAL);
+            assert_eq!(answered.body, "corrected");
+        }
+
+        #[tokio::test]
+        async fn the_thread_panel_and_the_room_agree_about_an_edited_message() {
+            // They share one map by construction: both publish through
+            // `drawn`. The test is what stops a later change splitting them.
+            let server = MatrixMockServer::new().await;
+            let (_dir, client) = signed_in(&server).await;
+            server
+                .sync_joined_room(&client, ruma::room_id!("!general:example.org"))
+                .await;
+            mount_event(&server, said(ORIGINAL, "the typo", 1_000)).await;
+            mount_relations(
+                &server,
+                vec![serde_json::json!({
+                    "type": "m.room.message",
+                    "event_id": "$reply:example.org",
+                    "room_id": ROOM,
+                    "sender": OTHER,
+                    "origin_server_ts": 3_000,
+                    "content": {
+                        "msgtype": "m.text",
+                        "body": "in the thread",
+                        "m.relates_to": { "rel_type": "m.thread", "event_id": ORIGINAL },
+                    },
+                })],
+            )
+            .await;
+            paginating(
+                &server,
+                vec![
+                    correcting("$edit:example.org", ORIGINAL, "corrected", 5_000),
+                    said(ORIGINAL, "the typo", 1_000),
+                ],
+                None,
+            )
+            .await;
+
+            let (rooms_seen, rooms_sink) = recorder::<Timeline>();
+            let (threads_seen, threads_sink) = recorder::<Option<timeline::Thread>>();
+            let watch = timeline::watch(client, ROOM, rooms_sink, threads_sink, |_| {});
+            wait_until(&rooms_seen, |reports| {
+                settled(reports).is_some_and(|report| !report.messages.is_empty())
+            })
+            .await;
+            watch.open_thread(Some(ORIGINAL.to_owned()));
+            let panels = wait_until(&threads_seen, |reports| {
+                reports
+                    .iter()
+                    .any(|report| report.as_ref().is_some_and(|open| open.root.is_some()))
+            })
+            .await;
+            let rooms = rooms_seen.lock().unwrap().clone();
+            drop(watch);
+
+            let root = panels
+                .iter()
+                .rev()
+                .find_map(|report| report.as_ref()?.root.as_ref())
+                .expect("the panel draws the message its thread hangs from");
+            assert_eq!(root.body, "corrected");
+            assert!(root.edited);
+            assert_eq!(bodies(settled(&rooms).unwrap()), vec!["corrected"]);
+        }
+    }
 }
 
 /// Saying what has been read.

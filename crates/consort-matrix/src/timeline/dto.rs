@@ -265,6 +265,18 @@ pub struct Message {
     /// untrue about the other twenty.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mentions: Vec<String>,
+    /// Whether what is drawn above is a correction rather than what was first
+    /// sent.
+    ///
+    /// The flag alone. What it said before is deliberately not carried: no
+    /// interface here offers an edit history, and putting the superseded text
+    /// on the wire would be shipping a sentence somebody deliberately took
+    /// back to every client that draws the room.
+    ///
+    /// Skipped when false, which is almost every message, so the ordinary case
+    /// costs nothing on the wire.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub edited: bool,
     pub kind: MessageKind,
 }
 

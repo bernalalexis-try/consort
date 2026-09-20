@@ -21,9 +21,10 @@
 //! put half of two conversations in one column with nothing to say which half
 //! belonged to what.
 //!
-//! Edits, on the same terms. An `m.replace` carries the new text and the
-//! interface has no way to attach it to the message it replaces, so drawing it
-//! inline would show a room a second copy of a sentence somebody corrected.
+//! Edits, for a different reason. An `m.replace` is a correction to something
+//! already said, so drawing it inline would show a room a second copy of the
+//! sentence somebody corrected. It is not discarded: [`replacement`] reads it,
+//! and the watcher folds it onto the message it replaces.
 //!
 //! Replies are **not** dropped. A reply is a whole message that happens to
 //! name another one, and it reads correctly on its own; a thread reply does
@@ -64,6 +65,39 @@ pub struct Annotated {
     pub key: String,
     /// Who reacted.
     pub sender: String,
+}
+
+/// One `m.replace` event, unpacked.
+///
+/// Its own type for the reason [`Annotated`] is one, and with a second reason
+/// on top: `target` and `event_id` are both event IDs and the difference
+/// between them is the difference between correcting a message and correcting
+/// the correction.
+pub struct Replacement {
+    /// The edit's own event ID, which is what a redaction of it names.
+    pub event_id: String,
+    /// The message it replaces.
+    pub target: String,
+    /// Who sent the edit.
+    ///
+    /// Carried rather than assumed, because whether it matches the original's
+    /// sender is the whole of what stops one person rewriting another's words.
+    /// Nothing here can answer that: the original is regularly not loaded.
+    pub sender: String,
+    /// The edit's own `origin_server_ts`, in milliseconds.
+    ///
+    /// Which of several edits wins, and nothing else. It is deliberately not
+    /// written onto the message: see `Loaded::drawn`.
+    pub at: u64,
+    /// What the message now says, with no formatting.
+    pub body: String,
+    /// What it now says as HTML, when the edit carried formatting.
+    ///
+    /// `None` is a message edited down to plain text, and it has to overwrite
+    /// rather than leave the old formatting standing: `FormattedBody` draws
+    /// the HTML when there is any, so a merge would draw the sentence that was
+    /// corrected.
+    pub html: Option<String>,
 }
 
 /// What this build says instead of an encrypted message it has no key for.
@@ -193,6 +227,54 @@ pub fn redaction(event: &TimelineEvent) -> Option<String> {
         .map(|id| id.to_string())
 }
 
+/// One event as an edit of another, or `None` when it is not one.
+///
+/// Read out of `m.new_content` and never out of the top-level body. That one
+/// is the fallback a client with no idea about edits draws, conventionally
+/// prefixed with `* `, and reading it is how a client ends up with a stray
+/// asterisk in front of every correction in a room. An edit that carries no
+/// `m.new_content` therefore carries nothing to fold, and `None` says so.
+///
+/// Says nothing about whether the edit is allowed. Whether the sender wrote
+/// the message being replaced is a comparison against the original, which is
+/// regularly not loaded when its edit arrives, so it is made at fold time by
+/// [`crate::timeline::Edits::latest_on`].
+pub fn replacement(event: &TimelineEvent) -> Option<Replacement> {
+    let AnySyncTimelineEvent::MessageLike(AnySyncMessageLikeEvent::RoomMessage(
+        SyncMessageLikeEvent::Original(said),
+    )) = event.raw().deserialize().ok()?
+    else {
+        return None;
+    };
+
+    let Some(Relation::Replacement(replaced)) = said.content.relates_to else {
+        return None;
+    };
+
+    // Text, and the two that are text wearing a different hat. An edit of an
+    // attachment's caption arrives as the attachment's own type with the
+    // caption inside it, and there is no caption editing surface to fold it
+    // onto: drawing the filename as the new body would be worse than leaving
+    // the message as it was.
+    let (body, formatted) = match replaced.new_content.msgtype {
+        MessageType::Text(text) => (text.body, text.formatted),
+        MessageType::Emote(emote) => (emote.body, emote.formatted),
+        MessageType::Notice(notice) => (notice.body, notice.formatted),
+        _ => return None,
+    };
+
+    Some(Replacement {
+        event_id: said.event_id.to_string(),
+        target: replaced.event_id.to_string(),
+        sender: said.sender.to_string(),
+        at: said.origin_server_ts.0.into(),
+        body,
+        html: formatted
+            .filter(|formatted| formatted.format == MessageFormat::Html)
+            .map(|formatted| formatted.body),
+    })
+}
+
 fn read(event: &TimelineEvent, reading: Reading) -> Option<Message> {
     if event.kind.is_utd() {
         return undecryptable(event);
@@ -224,8 +306,9 @@ fn read(event: &TimelineEvent, reading: Reading) -> Option<Message> {
         .unwrap_or_default();
 
     match said.content.relates_to {
-        // An edit, wherever it turns up. It carries the replacement text and
-        // nothing here can attach it to the message it replaces.
+        // An edit, wherever it turns up. It is a correction to a message
+        // already drawn rather than a line of its own, and [`replacement`] is
+        // what reads it.
         Some(Relation::Replacement(_)) => return None,
         // In the room it is half of a conversation happening elsewhere. In the
         // thread it is the conversation.
@@ -326,10 +409,11 @@ fn read(event: &TimelineEvent, reading: Reading) -> Option<Message> {
         id: said.event_id.to_string(),
         sender: said.sender.to_string(),
         at: said.origin_server_ts.0.into(),
-        // Not read off the event, because they are not on it. What is on a
-        // message is put there when a timeline is published, out of the
-        // annotations the watcher is holding.
+        // Neither of these is read off the event, because neither is on it.
+        // What is on a message is put there when a timeline is published, out
+        // of the annotations and the corrections the watcher is holding.
         reactions: Vec::new(),
+        edited: false,
         // Only for a reply. The plaintext fallback and an ordinary markdown
         // quote are the same characters, and the relation is the only thing
         // that tells them apart, so stripping unconditionally would eat the
@@ -475,6 +559,7 @@ fn undecryptable(event: &TimelineEvent) -> Option<Message> {
         html: None,
         media: None,
         thread: None,
+        edited: false,
         reactions: Vec::new(),
         reply_to: None,
         mentions: Vec::new(),
@@ -995,8 +1080,8 @@ mod tests {
 
     #[test]
     fn an_edit_is_left_out_of_a_thread_too() {
-        // It carries the replacement text, and a panel that drew it would show
-        // a second copy of a sentence somebody corrected.
+        // Not a line in the panel, on the same terms as in the room. It is
+        // read by `replacement` and folded onto the message it replaces.
         let edit = sent(json!({
             "msgtype": "m.text",
             "body": "* corrected",
@@ -1028,9 +1113,9 @@ mod tests {
 
     #[test]
     fn an_edit_is_left_out() {
-        // It carries the new text, and there is nothing here to attach it to
-        // the message it replaces, so drawing it inline would show the room a
-        // second copy of a sentence somebody corrected.
+        // Still not a line in the room. It carries a correction to something
+        // already drawn, and a second copy of a corrected sentence is not what
+        // the correction was for. [`replacement`] is what reads it.
         let edit = sent(json!({
             "msgtype": "m.text",
             "body": "* corrected",
@@ -1042,6 +1127,144 @@ mod tests {
         }));
 
         assert_eq!(message(&edit), None);
+    }
+
+    /// An edit of `target`, as a homeserver sends one.
+    fn edit_of(target: &str, new_content: Value) -> TimelineEvent {
+        sent(json!({
+            "msgtype": "m.text",
+            "body": "* the fallback nothing should read",
+            "m.new_content": new_content,
+            "m.relates_to": { "rel_type": "m.replace", "event_id": target },
+        }))
+    }
+
+    #[test]
+    fn a_replacement_carries_the_new_text() {
+        let edit = replacement(&edit_of("$original:example.org", text("corrected")))
+            .expect("an m.replace is a replacement");
+
+        assert_eq!(edit.event_id, "$one:example.org");
+        assert_eq!(edit.target, "$original:example.org");
+        assert_eq!(edit.sender, "@ada:example.org");
+        assert_eq!(edit.at, 1_700_000_000_000);
+        assert_eq!(edit.body, "corrected");
+    }
+
+    #[test]
+    fn a_replacement_never_reads_the_asterisk_fallback() {
+        // The top-level body is the copy a client that knows nothing about
+        // edits draws, and convention prefixes it with `* `. Reading it is how
+        // a client ends up with a stray asterisk in front of every correction.
+        let edit = replacement(&edit_of("$original:example.org", text("corrected")))
+            .expect("an m.replace is a replacement");
+
+        assert_eq!(edit.body, "corrected");
+    }
+
+    #[test]
+    fn a_replacement_carries_the_new_formatting() {
+        let edit = replacement(&edit_of(
+            "$original:example.org",
+            json!({
+                "msgtype": "m.text",
+                "body": "corrected",
+                "format": "org.matrix.custom.html",
+                "formatted_body": "<em>corrected</em>",
+            }),
+        ))
+        .expect("an m.replace is a replacement");
+
+        assert_eq!(edit.html.as_deref(), Some("<em>corrected</em>"));
+    }
+
+    #[test]
+    fn a_replacement_that_dropped_the_formatting_says_so() {
+        // `None` rather than absent-and-therefore-unchanged. Somebody who
+        // edits a formatted message down to plain text gets the old HTML drawn
+        // for ever if the fold merges instead of replacing.
+        let edit = replacement(&edit_of("$original:example.org", text("plain now")))
+            .expect("an m.replace is a replacement");
+
+        assert_eq!(edit.html, None);
+    }
+
+    #[test]
+    fn a_replacement_of_a_threaded_message_is_still_a_replacement() {
+        // An edit inside a thread relates by `m.replace`, not by `m.thread`:
+        // the relation slot holds one thing and the correction is what it
+        // holds. A reader that looked for the thread relation would drop every
+        // correction made in a panel.
+        let edit = replacement(&edit_of("$in a thread:example.org", text("corrected")))
+            .expect("an m.replace is a replacement");
+
+        assert_eq!(edit.target, "$in a thread:example.org");
+    }
+
+    #[test]
+    fn an_edit_of_an_attachments_caption_is_left_alone_for_now() {
+        // Deliberate rather than missed. Nothing in this build offers caption
+        // editing, so the only way one arrives is from another client, and
+        // folding it would need the caption read out of the attachment's own
+        // type. Until there is a surface for it, a caption stays as it was
+        // sent rather than half-following an edit: see #74's out of scope.
+        let edit = sent(json!({
+            "msgtype": "m.image",
+            "body": "* a new caption",
+            "url": "mxc://example.org/one",
+            "m.new_content": {
+                "msgtype": "m.image",
+                "body": "a new caption",
+                "url": "mxc://example.org/one",
+            },
+            "m.relates_to": {
+                "rel_type": "m.replace",
+                "event_id": "$original:example.org",
+            },
+        }));
+
+        assert!(replacement(&edit).is_none());
+    }
+
+    #[test]
+    fn an_ordinary_message_is_not_a_replacement() {
+        assert!(replacement(&sent(text("hello"))).is_none());
+    }
+
+    #[test]
+    fn a_reaction_is_not_a_replacement() {
+        let reacted = event(json!({
+            "type": "m.reaction",
+            "event_id": "$reacted:example.org",
+            "sender": "@ada:example.org",
+            "origin_server_ts": 1_700_000_000_000u64,
+            "content": {
+                "m.relates_to": {
+                    "rel_type": "m.annotation",
+                    "event_id": "$one:example.org",
+                    "key": "\u{1f44d}",
+                },
+            },
+        }));
+
+        assert!(replacement(&reacted).is_none());
+    }
+
+    #[test]
+    fn an_edit_with_no_new_content_is_nothing_to_fold() {
+        // A client that sent only the `* ` fallback. There is no replacement
+        // text in it that is not the fallback, and guessing at one would draw
+        // the asterisk.
+        let edit = sent(json!({
+            "msgtype": "m.text",
+            "body": "* corrected",
+            "m.relates_to": {
+                "rel_type": "m.replace",
+                "event_id": "$original:example.org",
+            },
+        }));
+
+        assert!(replacement(&edit).is_none());
     }
 
     #[test]

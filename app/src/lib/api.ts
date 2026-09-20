@@ -1346,6 +1346,17 @@ export interface Message {
    * most of them.
    */
   reactions?: Reaction[];
+  /**
+   * Whether what is drawn is a correction rather than what was first sent.
+   *
+   * The flag alone. What it said before does not cross the IPC: there is no
+   * edit history here, and putting the superseded sentence on the wire would
+   * be shipping something somebody deliberately took back.
+   *
+   * Absent rather than false for the messages nobody edited, which is almost
+   * all of them.
+   */
+  edited?: boolean;
   kind: MessageKind;
 }
 

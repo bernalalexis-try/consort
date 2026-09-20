@@ -151,6 +151,7 @@ mod tests {
             reactions: Vec::new(),
             reply_to: None,
             mentions: Vec::new(),
+            edited: false,
             kind: MessageKind::Text,
         }
     }
