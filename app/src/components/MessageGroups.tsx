@@ -63,6 +63,86 @@ export function firstUnread(
 }
 
 /**
+ * The messages that open a local calendar day, by ID.
+ *
+ * What a date separator is drawn above. The comparison is between calendar
+ * days rather than elapsed time, because a conversation running from 20:00 to
+ * 04:00 crosses one day and never crosses twenty-four hours, and a rule
+ * measuring milliseconds would put the line in neither of the places a reader
+ * expects.
+ *
+ * The first message loaded is always in here. The day it belongs to has to be
+ * said, and the consequence of saying it is that paging older history in may
+ * take the line away again when the message above turns out to be the same
+ * day. That is the right answer recomputing, and the timeline anchors its
+ * scroll from the bottom, so nothing jumps.
+ *
+ * Its own rule rather than day awareness inside [`group`] below, which has one
+ * job and tests that pin it. Exported on the same terms as that one: the rule
+ * is the part worth pinning and the markup is not.
+ */
+export function firstOfEachDay(messages: Message[]): ReadonlySet<string> {
+  const opens = new Set<string>();
+  let previous: string | undefined;
+
+  for (const message of messages) {
+    const day = new Date(message.at).toDateString();
+    if (day !== previous) opens.add(message.id);
+    previous = day;
+  }
+
+  return opens;
+}
+
+/** A day, in milliseconds, for counting calendar days apart. */
+const DAY = 24 * 60 * 60 * 1000;
+
+/** Midnight at the start of the local day this moment falls in. */
+function dayStart(at: number): number {
+  const midnight = new Date(at);
+  midnight.setHours(0, 0, 0, 0);
+  return midnight.getTime();
+}
+
+/**
+ * What a date separator says.
+ *
+ * `now` is a parameter rather than a call inside, so a test can pin it without
+ * faking the clock for everything else in the file.
+ *
+ * A room left open across midnight keeps saying "Today" over yesterday until
+ * something makes it render again, which in a live room is the next message.
+ * Accepted rather than fixed: a timer whose only job is to relabel one line at
+ * midnight is more machinery than the defect is worth.
+ *
+ * Rounded rather than truncated, because two of the days in a year are 23 and
+ * 25 hours long and a division would put one of them a day out.
+ */
+export function dayLabel(at: number, now = Date.now()): string {
+  const back = Math.round((dayStart(now) - dayStart(at)) / DAY);
+
+  if (back === 0) return "Today";
+  if (back === 1) return "Yesterday";
+
+  const day = new Date(at);
+  // Inside the last week a weekday places it on its own, and the date proper
+  // would be more words for the same fact.
+  if (back > 1 && back < 7) {
+    return day.toLocaleDateString(undefined, { weekday: "long" });
+  }
+
+  return day.toLocaleDateString(undefined, {
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    // Dropped for the year being lived in, which is the year a reader assumes.
+    ...(day.getFullYear() === new Date(now).getFullYear()
+      ? {}
+      : { year: "numeric" }),
+  });
+}
+
+/**
  * Collapse consecutive messages from one person into groups.
  *
  * Exported for the tests, because the rule is the only thing here worth
@@ -285,6 +365,23 @@ function NewMessagesLine() {
 }
 
 /**
+ * The day the messages under it were said.
+ *
+ * The same rule-and-words treatment as the line above, because it answers the
+ * same kind of question about a place in the conversation. What differs is
+ * that the rule runs on both sides with the words centred: a date is a heading
+ * over the day below it, where "New messages" is a label on the conversation
+ * that follows.
+ */
+function DaySeparator({ label }: { label: string }) {
+  return (
+    <p className="timeline__day" role="separator" data-day-line="true">
+      <span className="timeline__day-said">{label}</span>
+    </p>
+  );
+}
+
+/**
  * A run of grouped messages, drawn.
  *
  * Its own component because a thread panel draws the same thing beside the
@@ -312,6 +409,7 @@ export function MessageGroups({
   onCopyLink,
   onGoTo,
   newFrom,
+  newDay,
 }: {
   groups: Group[];
   /** Display names by user ID, for whoever the room has told us about. */
@@ -409,6 +507,15 @@ export function MessageGroups({
    */
   newFrom?: string | undefined;
   /**
+   * The messages that open a day, which get a date separator above them.
+   *
+   * Absent inside a thread panel, and the default is no separators. A thread
+   * is one conversation read as a unit and its root is regularly weeks older
+   * than its replies, so a line between the root and every reply would be the
+   * ordinary case rather than the exception. See [`firstOfEachDay`].
+   */
+  newDay?: ReadonlySet<string>;
+  /**
    * Go to a message that is named by a reply but is not drawn.
    *
    * Only reached when the scroll above could not find it, which is a reply
@@ -505,11 +612,16 @@ export function MessageGroups({
 
         return (
           /*
-            A fragment because the line, when it falls here, belongs above the
-            group rather than inside it: drawn within the article it would sit
-            under the byline, which reads as the person having said it.
+            A fragment because a line falling here belongs above the group
+            rather than inside it: drawn within the article it would sit under
+            the byline, which reads as the person having said it.
+
+            The date goes above the unread mark when both land on the same
+            message. A day is the larger container, and a place in the
+            conversation belongs inside the day it falls in.
           */
           <Fragment key={one.id}>
+            {newDay?.has(one.id) && <DaySeparator label={dayLabel(one.at)} />}
             {one.messages[0]?.id === newFrom && <NewMessagesLine />}
             <article
               className="timeline__group"
@@ -569,12 +681,17 @@ export function MessageGroups({
                   return (
                     <Fragment key={message.id}>
                       {/*
-                        The other half of the same line. A group is one person
-                        talking without pause, so the last thing read and the
-                        first thing new are regularly two messages inside one of
-                        them. Skipped for the group's first message, which the
-                        fragment above has already drawn it for.
+                        The other half of both lines. A group is one person
+                        talking without pause, so midnight and the place reading
+                        stopped regularly fall between two messages inside one of
+                        them rather than between two groups. Skipped for the
+                        group's first message, which the fragment above has
+                        already drawn them for.
                       */}
+                      {newDay?.has(message.id) &&
+                        message.id !== one.messages[0]?.id && (
+                          <DaySeparator label={dayLabel(message.at)} />
+                        )}
                       {message.id === newFrom &&
                         message.id !== one.messages[0]?.id && <NewMessagesLine />}
                       <div
