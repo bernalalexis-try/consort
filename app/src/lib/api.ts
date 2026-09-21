@@ -5,7 +5,7 @@
  * are the seam where a Rust change becomes a TypeScript compile error, so keep
  * them in step with that file rather than reaching for `any` at a call site.
  */
-import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 export interface Profile {
@@ -2032,6 +2032,16 @@ export function saveAttachment(
 }
 
 /**
+ * The scheme attachments are served on.
+ *
+ * `media::SCHEME` in `app/src-tauri/src/media.rs` is the same string, and the
+ * content security policy in `tauri.conf.json` names both origins it can
+ * become. A test in `api.test.ts` reads that policy back and fails if the two
+ * ever drift.
+ */
+const MEDIA_SCHEME = "consortmedia";
+
+/**
  * Where to point an `img` or a `video` at one attachment.
  *
  * Not a command, and deliberately: this is a string, so drawing a picture is
@@ -2045,6 +2055,15 @@ export function saveAttachment(
  * decodes it, and both sides have a test pinning one literal so a change to
  * either encoding fails loudly rather than becoming a 400 for every
  * attachment.
+ *
+ * The origin in front of that path is Tauri's to decide, which is why
+ * `convertFileSrc` builds it rather than a template string here. A custom
+ * scheme is only a scheme on Linux and macOS: WebView2 cannot register one, so
+ * on Windows wry serves it as `http://consortmedia.localhost` and intercepts
+ * the request by that prefix. v0.6.0 wrote the Linux form out by hand and drew
+ * no attachment at all on Windows, where the request matched no filter,
+ * reached no handler, and failed without reaching a log. That is issue #76,
+ * and delegating is what stops it coming back the next time the rule changes.
  */
 export function mediaUrl(handle: string): string {
   // Through UTF-8 rather than straight into `btoa`, which throws on anything
@@ -2059,7 +2078,7 @@ export function mediaUrl(handle: string): string {
     .replace(/\+/g, "-")
     .replace(/\//g, "_")
     .replace(/=+$/, "");
-  return `consortmedia://localhost/${base64}`;
+  return convertFileSrc(base64, MEDIA_SCHEME);
 }
 
 /**
