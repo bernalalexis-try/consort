@@ -98,7 +98,16 @@ fail the build on a vulnerability. On a dependency set this frozen that is the
 point: an advisory nobody can fix by moving a version is exactly the kind of
 thing that gets scrolled past when it is only a warning.
 
-Both are clean as of the day this was written, and no advisory is being ignored.
+`pnpm audit` is clean. One `cargo audit` advisory is ignored, in
+`.cargo/audit.toml`:
+
+| Advisory | Crate | Why it is ignored | What takes it out |
+|---|---|---|---|
+| RUSTSEC-2026-0292 | `imbl-sized-chunks` 0.1.3 | A double free reachable only when an element's `Drop` panics. Nothing put in an imbl collection here has one: the timeline is an `ObservableVector<Arc<TimelineItem>>`, and what that bottoms out in is ruma event types, strings and counted pointers. | The matrix-sdk pin moving. Only imbl 7.0.2 asks for the patched `imbl-sized-chunks`, the pinned fork holds `imbl = "6.1.0"`, and upstream matrix-rust-sdk is already on 7.0.2. |
+
+That entry is the third option below, reached because the first two are closed:
+cargo refuses the version bump outright, and the fix is not in either fork but
+in a crate matrix-sdk pins.
 
 `cargo audit` also reports crates that are unmaintained, unsound or yanked, and
 those do not fail the build. Twenty-two of them do not: almost all are the GTK3

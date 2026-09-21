@@ -219,6 +219,14 @@ jobs:
         # why an ignore entry has to carry a reason.
         run: cargo audit
 
+      - name: What the audit was told to pass over
+        # cargo audit says nothing about an advisory it has been told to
+        # ignore, and there is no flag that makes it. An accepted risk nobody
+        # is shown is the thing this job exists to prevent, so the file is
+        # printed here and the reasons in it are what a reviewer reads.
+        if: always()
+        run: cat .cargo/audit.toml
+
   hygiene:
     name: Hygiene
     runs-on: ubuntu-latest
