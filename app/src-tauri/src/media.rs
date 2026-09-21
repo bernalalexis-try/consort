@@ -42,9 +42,13 @@ use tauri::http::{Response, StatusCode, header};
 /// The scheme attachments are served on.
 ///
 /// On Linux and macOS this makes an origin of `consortmedia://localhost`; on
-/// Windows it would be `http://consortmedia.localhost`. Both are in the
-/// content security policy in `tauri.conf.json`, which is the other half of
-/// this working at all.
+/// Windows WebView2 cannot register a non-standard scheme, so wry serves it as
+/// `http://consortmedia.localhost` and intercepts requests by that prefix.
+/// Both are in the content security policy in `tauri.conf.json`, and the URL
+/// is built by `mediaUrl` in `app/src/lib/api.ts` through Tauri's own
+/// `convertFileSrc` rather than by hand, which is the other half of this
+/// working at all. Writing the Linux form out by hand is what broke every
+/// attachment on Windows in v0.6.0.
 pub const SCHEME: &str = "consortmedia";
 
 /// The most attachment bytes to keep in memory at once.

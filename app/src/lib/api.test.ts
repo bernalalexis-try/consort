@@ -1,7 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { mockConvertFileSrc } from "@tauri-apps/api/mocks";
+
+import tauriConfig from "../../src-tauri/tauri.conf.json";
 
 const invoke = vi.hoisted(() => vi.fn());
-vi.mock("@tauri-apps/api/core", () => ({ invoke }));
+
+// Only `invoke` is faked. `convertFileSrc` is kept because it is not IPC: it
+// builds a string, and which string it builds is a platform difference this
+// file has tests for. It reads the stand-in runtime `test/setup.ts` installs.
+vi.mock("@tauri-apps/api/core", async (actual) => ({
+  ...(await actual<typeof import("@tauri-apps/api/core")>()),
+  invoke,
+}));
 
 const listen = vi.hoisted(() => vi.fn());
 vi.mock("@tauri-apps/api/event", () => ({ listen }));
@@ -1227,5 +1237,94 @@ describe("the call commands", () => {
     expect(url.slice("consortmedia://localhost/".length)).toMatch(
       /^[A-Za-z0-9_-]+$/,
     );
+  });
+});
+
+describe("addressing an attachment on Windows", () => {
+  // Issue #76. v0.6.0 drew no attachment at all on Windows and every one of
+  // them on Arch, because the URL was written out by hand in the one shape
+  // Linux and macOS use. WebView2 cannot register a non-standard scheme, so
+  // wry serves a custom protocol over an HTTP subdomain there and filters on
+  // `http://consortmedia.*` to catch it. A `consortmedia://` request matches
+  // no filter, reaches no handler, and fails without reaching a log, which is
+  // why nothing in the Rust output named it.
+
+  it("serves media over the HTTP subdomain WebView2 can intercept", () => {
+    mockConvertFileSrc("windows");
+
+    expect(
+      mediaUrl('{"url":"mxc://example.org/abc","key":{"k":"a+b/c"}}'),
+    ).toBe(
+      "http://consortmedia.localhost/eyJ1cmwiOiJteGM6Ly9leGFtcGxlLm9yZy9hYmMiLCJrZXkiOnsiayI6ImErYi9jIn19",
+    );
+  });
+
+  it("addresses a custom emoji the same way", () => {
+    mockConvertFileSrc("windows");
+
+    expect(mxcUrl("mxc://example.org/abc")).toBe(
+      "http://consortmedia.localhost/eyJ1cmwiOiJteGM6Ly9leGFtcGxlLm9yZy9hYmMifQ",
+    );
+  });
+
+  it("hands over the same handle either way, so Rust decodes one thing", () => {
+    // The path is what `media::handle` base64 decodes, and it must not depend
+    // on which platform wrote it. Only the origin in front of it may differ.
+    const handle = '{"url":"mxc://example.org/abc"}';
+
+    mockConvertFileSrc("linux");
+    const unix = mediaUrl(handle);
+    mockConvertFileSrc("windows");
+    const windows = mediaUrl(handle);
+
+    expect(new URL(windows).pathname).toBe(new URL(unix).pathname);
+  });
+});
+
+describe("the content security policy and the media URL agree", () => {
+  // The other half of issue #76, and the half that was already right. A media
+  // URL is only ever as good as the policy that admits it, and the two live in
+  // different files that change for different reasons: the scheme is chosen in
+  // `api.ts` and permitted in `tauri.conf.json`. Nothing but this test makes
+  // one follow the other, and the failure it guards against is silent on the
+  // platform whoever made the change was sitting at.
+
+  /** The CSP the bundle actually ships, by directive, each as a source list. */
+  const directives = new Map(
+    tauriConfig.app.security.csp
+      .split(";")
+      .map((directive) => directive.trim().split(/\s+/))
+      .filter(([name]) => name !== "")
+      .map(([name, ...sources]) => [name, sources] as const),
+  );
+
+  /**
+   * The CSP source that has to be listed for `url` to load.
+   *
+   * An origin for the HTTP form Windows and Android use, and a bare scheme for
+   * the `consortmedia://localhost` one everywhere else, which is how a policy
+   * names a non-standard scheme.
+   */
+  const permitting = (url: string): string => {
+    const parsed = new URL(url);
+    return parsed.protocol === "http:" || parsed.protocol === "https:"
+      ? parsed.origin
+      : parsed.protocol;
+  };
+
+  it.each(["linux", "windows"])("admits a picture drawn on %s", (name) => {
+    mockConvertFileSrc(name);
+
+    const source = permitting(mediaUrl('{"url":"mxc://example.org/abc"}'));
+
+    expect(directives.get("img-src")).toContain(source);
+  });
+
+  it.each(["linux", "windows"])("admits a clip played on %s", (name) => {
+    mockConvertFileSrc(name);
+
+    const source = permitting(mediaUrl('{"url":"mxc://example.org/abc"}'));
+
+    expect(directives.get("media-src")).toContain(source);
   });
 });
