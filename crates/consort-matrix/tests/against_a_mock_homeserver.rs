@@ -3256,6 +3256,26 @@ mod timeline {
             .cast_unchecked()
     }
 
+    /// The content of the one message that was sent, as it went over the wire.
+    ///
+    /// For the assertions a mounted matcher cannot make. `body_partial_json`
+    /// is a subset match, so it can say what is in an event and never that
+    /// something is missing from it, and ruma leaves a field holding its
+    /// default off the wire entirely.
+    async fn sent_message(server: &MatrixMockServer) -> serde_json::Value {
+        let requests = server
+            .server()
+            .received_requests()
+            .await
+            .expect("the mock server is recording");
+
+        requests
+            .iter()
+            .find(|request| request.url.path().contains("/send/m.room.message/"))
+            .map(|request| serde_json::from_slice(&request.body).expect("the send body is JSON"))
+            .expect("nothing was sent")
+    }
+
     /// Answer `/messages` with `chunk`, newest first, and `end` as the token
     /// for the page behind it.
     async fn paginating(
@@ -3727,10 +3747,99 @@ mod timeline {
             ROOM,
             "$root:example.org",
             "$last:example.org",
+            None,
             "Consort",
         )
         .await
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn answering_one_reply_in_a_thread_points_at_it_rather_than_at_the_last() {
+        // The difference between the two is one boolean, and it is the whole
+        // of what makes a thread panel draw the quoted row: `facts::answering`
+        // reads an `m.in_reply_to` that is falling back as decoration and
+        // ignores it. Sent as a fallback, an answer to the third reply of
+        // twenty is drawn as one more line at the bottom.
+        let server = MatrixMockServer::new().await;
+        let (_dir, client) = signed_in(&server).await;
+        server
+            .sync_joined_room(&client, ruma::room_id!("!general:example.org"))
+            .await;
+        server
+            .mock_room_state_encryption()
+            .expect_any_access_token()
+            .plain()
+            .mount()
+            .await;
+        server
+            .mock_room_send()
+            .expect_any_access_token()
+            .ok(ruma::event_id!("$sent:example.org"))
+            .expect(1)
+            .mount()
+            .await;
+
+        timeline::send_in_thread(
+            &client,
+            ROOM,
+            "$root:example.org",
+            "$said:example.org",
+            Some(OTHER),
+            "quite",
+        )
+        .await
+        .unwrap();
+
+        // The whole relation rather than a subset of it, because what says
+        // this is a real answer is a field that is not there: `false` is the
+        // default for `is_falling_back` and ruma leaves the default off the
+        // wire, so a partial match would pass whether or not the fallback flag
+        // was set.
+        let sent = sent_message(&server).await;
+        assert_eq!(
+            sent["m.relates_to"],
+            serde_json::json!({
+                "rel_type": "m.thread",
+                "event_id": "$root:example.org",
+                "m.in_reply_to": { "event_id": "$said:example.org" },
+            }),
+        );
+        // The same half a reply in the room carries, and for the same reason:
+        // an answer nobody is notified of is a line in a panel that is not
+        // open.
+        assert_eq!(
+            sent["m.mentions"],
+            serde_json::json!({ "user_ids": [OTHER] })
+        );
+    }
+
+    #[tokio::test]
+    async fn an_answer_in_a_thread_to_somebody_with_no_address_is_refused() {
+        // Nothing is mounted, so an answer that got past this would fail on a
+        // request rather than on the name it could not parse.
+        let server = MatrixMockServer::new().await;
+        let (_dir, client) = signed_in(&server).await;
+        server
+            .sync_joined_room(&client, ruma::room_id!("!general:example.org"))
+            .await;
+
+        let refused = timeline::send_in_thread(
+            &client,
+            ROOM,
+            "$root:example.org",
+            "$said:example.org",
+            Some("not a user"),
+            "quite",
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(
+            refused,
+            consort_matrix::Error::NoSuchUser { ref user_id } if user_id == "not a user"
+        ));
+        assert!(!refused.user_message().is_empty());
     }
 
     #[tokio::test]
@@ -4070,6 +4179,7 @@ mod timeline {
             ROOM,
             "$root:example.org",
             "$last:example.org",
+            None,
             "   ",
         )
         .await
@@ -4086,7 +4196,7 @@ mod timeline {
             .sync_joined_room(&client, ruma::room_id!("!general:example.org"))
             .await;
 
-        let refused = timeline::send_in_thread(&client, ROOM, "not an event", "$l", "hello")
+        let refused = timeline::send_in_thread(&client, ROOM, "not an event", "$l", None, "hello")
             .await
             .unwrap_err();
 

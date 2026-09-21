@@ -17,11 +17,14 @@ import {
   threadOpen,
   threadSend,
   timelineCopyLink,
+  timelineEdit,
   timelineReact,
   timelineUnreact,
+  type Message,
   type Participant,
   type Thread,
 } from "../lib/api";
+import { ComposerTarget } from "./ComposerTarget";
 import { MessageGroups, group } from "./MessageGroups";
 import { PersonMenu } from "./PersonMenu";
 import { AT_THE_BOTTOM, COPIED_FOR } from "./RoomTimeline";
@@ -101,6 +104,28 @@ export function ThreadPanel({
     at: { x: number; y: number };
   } | null>(null);
   const [draft, setDraft] = useState("");
+  /*
+    Which reply the box is answering, or none, in which case it answers the
+    thread. The whole message rather than its ID, because the line above the
+    box quotes it and the send has to name who wrote it.
+  */
+  const [answering, setAnswering] = useState<Message | null>(null);
+  /*
+    Which message the box is correcting, or none. Mutually exclusive with
+    `answering` by construction: one box with one Send cannot have two things
+    to do and no way to say which.
+  */
+  const [editing, setEditing] = useState<Message | null>(null);
+  /*
+    The same, readable without making the effect that clears it depend on it.
+    An effect naming `editing` in its dependencies would fire on every press
+    of Edit and undo the press.
+
+    Written during the render rather than from an effect, which is safe here
+    because nothing reads it during one.
+  */
+  const editingNow = useRef<Message | null>(null);
+  editingNow.current = editing;
   const [sending, setSending] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   /* The reply whose address has just gone to the clipboard, or none. */
@@ -108,6 +133,9 @@ export function ThreadPanel({
   // The scrolling box, so a jump to an answered message is looked for in this
   // panel rather than in the room beside it, which draws the root as well.
   const scroller = useRef<HTMLDivElement>(null);
+  // The box, so pressing Edit or Reply on a message puts the cursor where the
+  // answer is typed rather than leaving it on the control that was pressed.
+  const draftBox = useRef<HTMLTextAreaElement>(null);
   /*
     Whether the reader was at the bottom before this render, on the room's
     terms. True to begin with, which is what opens a thread at its newest
@@ -177,6 +205,24 @@ export function ThreadPanel({
   */
   useLayoutEffect(() => {
     following.current = true;
+  }, [thread?.rootId]);
+
+  /*
+    The composer goes with it, for the same reason. A message in the thread
+    that was closed is not something the one now open can answer or correct,
+    and a correction left pointed at it would send the words typed here to
+    another conversation.
+
+    The draft survives an ordinary reply and not a correction, which is the
+    rule the room's composer has: what is in the box while editing is the old
+    message rather than something somebody typed.
+  */
+  useEffect(() => {
+    setAnswering(null);
+    stopEditing();
+    // Neither of those is read here, and both are the same function on every
+    // render. What this depends on is the thread changing.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [thread?.rootId]);
 
   // Before the browser paints, so opening a thread is not a visible fall from
@@ -322,6 +368,45 @@ export function ThreadPanel({
     });
   }
 
+  /** Answer one reply in the thread, with the box ready for what comes next. */
+  function reply(message: Message) {
+    setAnswering(message);
+    setEditing(null);
+    draftBox.current?.focus();
+  }
+
+  /**
+   * Correct a message, with the box opened on what it currently says.
+   *
+   * Opened on the sentence rather than empty, because almost every edit is one
+   * word in a sentence somebody otherwise meant. What goes back is the
+   * plaintext: `html` is what the sender's markdown became, and putting tags
+   * in the box would have somebody editing the rendering of their message.
+   */
+  function edit(message: Message) {
+    setEditing(message);
+    setAnswering(null);
+    setDraft(message.body);
+    draftBox.current?.focus();
+  }
+
+  /**
+   * Put the composer back to an ordinary reply.
+   *
+   * The box is emptied as well, unlike calling off a reply. What is in there
+   * is the old message rather than something somebody typed, so leaving it
+   * would put a sentence already in the thread into the next reply.
+   *
+   * Which is why it does nothing at all when no correction is in progress.
+   * Escape and a thread closing both reach this whatever the box holds, and
+   * emptying it either time would throw away a half-written reply.
+   */
+  function stopEditing() {
+    if (editingNow.current === null) return;
+    setEditing(null);
+    setDraft("");
+  }
+
   /**
    * Put one reply's address on the clipboard.
    *
@@ -341,22 +426,38 @@ export function ThreadPanel({
   if (thread === null) return null;
 
   /*
-    What the reply is answering, for the fallback a client with no idea about
-    threads draws. The last thing said in the thread, or the message it hangs
-    from when nobody has said anything yet.
+    What a reply points at when it is answering nobody in particular: the last
+    thing said in the thread, or the message it hangs from when nobody has said
+    anything yet. That is the fallback a client with no idea about threads
+    draws, and nothing about which thread the reply lands in depends on it.
   */
-  const answering = thread.messages.at(-1)?.id ?? thread.rootId;
+  const latest = thread.messages.at(-1)?.id ?? thread.rootId;
 
-  async function reply() {
+  async function send() {
     if (thread === null || draft.trim() === "" || sending) return;
 
     setSending(true);
     setProblem(null);
     try {
-      await threadSend(thread.roomId, thread.rootId, answering, draft);
+      // A correction replaces a message that is already in the room, so it is
+      // the room's command rather than the thread's: an edit carries no
+      // thread relation of its own and is folded onto whatever it names.
+      if (editing !== null) {
+        await timelineEdit(thread.roomId, editing.id, draft);
+      } else {
+        await threadSend(
+          thread.roomId,
+          thread.rootId,
+          answering?.id ?? latest,
+          answering?.sender ?? null,
+          draft,
+        );
+      }
       // Cleared only once the homeserver has it. A box that empties on a send
       // that failed loses what somebody wrote.
       setDraft("");
+      setAnswering(null);
+      setEditing(null);
     } catch (raw: unknown) {
       setProblem(asCommandError(raw).message);
     } finally {
@@ -412,6 +513,8 @@ export function ThreadPanel({
               container={scroller}
               copiedId={copied}
               onAbout={(person, at) => setOpened({ person, at })}
+              onReply={reply}
+              onEdit={edit}
               onReact={react}
               onCopyLink={copyLink}
             />
@@ -437,6 +540,8 @@ export function ThreadPanel({
           container={scroller}
           copiedId={copied}
           onAbout={(person, at) => setOpened({ person, at })}
+          onReply={reply}
+          onEdit={edit}
           onReact={react}
           onCopyLink={copyLink}
         />
@@ -448,11 +553,30 @@ export function ThreadPanel({
         </p>
       )}
 
+      {/*
+        What the next reply will answer, when it is one line of the thread
+        rather than the thread itself. Without one it answers the conversation,
+        which is what the box does when nothing has been pressed.
+      */}
+      {answering !== null && (
+        <ComposerTarget
+          doing="reply"
+          who={names[answering.sender] ?? answering.sender}
+          message={answering}
+          onStop={() => setAnswering(null)}
+        />
+      )}
+
+      {/* The same line, for the other thing the box can be pointed at. */}
+      {editing !== null && (
+        <ComposerTarget doing="edit" message={editing} onStop={stopEditing} />
+      )}
+
       <form
         className="thread__composer"
         onSubmit={(event) => {
           event.preventDefault();
-          void reply();
+          void send();
         }}
       >
         <label className="thread__label" htmlFor="thread-draft">
@@ -461,25 +585,47 @@ export function ThreadPanel({
         <textarea
           id="thread-draft"
           className="thread__draft"
+          ref={draftBox}
           rows={1}
           value={draft}
           placeholder="Reply in this thread"
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={(event) => {
+            /*
+              Escape puts the box back to an ordinary reply. Stopped where it
+              is caught, because the listener that shuts the panel is on the
+              window one step further out, and without this one press would
+              both abandon the correction and close the thread it was in.
+            */
+            if (
+              event.key === "Escape" &&
+              (answering !== null || editing !== null)
+            ) {
+              event.stopPropagation();
+              setAnswering(null);
+              stopEditing();
+              return;
+            }
             // Enter sends and Shift+Enter breaks the line, the same as the
             // room's box. Two boxes on one screen behaving differently is
             // worse than either behaviour on its own.
             if (event.key !== "Enter" || event.shiftKey) return;
             event.preventDefault();
-            void reply();
+            void send();
           }}
         />
+        {/*
+          "Send" rather than "Reply", which is what this said while it was the
+          only control in the panel that could mean anything. Every message in
+          here now has a Reply of its own, and two controls with one word on
+          them are two controls nobody can tell apart.
+        */}
         <button
           type="submit"
           className="thread__send"
           disabled={draft.trim() === "" || sending}
         >
-          Reply
+          Send
         </button>
       </form>
 

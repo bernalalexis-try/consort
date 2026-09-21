@@ -8,6 +8,7 @@ const threadSend = vi.hoisted(() => vi.fn());
 const resendState = vi.hoisted(() => vi.fn());
 const memberNames = vi.hoisted(() => vi.fn());
 const timelineCopyLink = vi.hoisted(() => vi.fn());
+const timelineEdit = vi.hoisted(() => vi.fn());
 const memberAvatar = vi.hoisted(() => vi.fn());
 const memberProfile = vi.hoisted(() => vi.fn());
 // For the card a name opens, which reads its own saved volume.
@@ -22,6 +23,7 @@ vi.mock("../lib/api", async (importOriginal) => ({
   memberNames,
   memberAvatar,
   timelineCopyLink,
+  timelineEdit,
   memberProfile,
   audioSettings,
   setPersonVolume,
@@ -35,6 +37,7 @@ import type { Message, Thread } from "../lib/api";
 
 const GENERAL = "!general:example.org";
 const ADA = "@ada:example.org";
+const LIN = "@lin:example.org";
 const NOON = Date.parse("2026-01-01T12:00:00Z");
 
 function said(id: string, body: string, at = NOON): Message {
@@ -74,6 +77,7 @@ beforeEach(() => {
   memberProfile.mockReset().mockResolvedValue(null);
   memberNames.mockReset().mockResolvedValue({ [ADA]: "Ada" });
   timelineCopyLink.mockReset().mockResolvedValue(undefined);
+  timelineEdit.mockReset().mockResolvedValue(undefined);
   resendState.mockReset().mockResolvedValue(undefined);
   threadOpen.mockReset().mockResolvedValue(undefined);
   threadSend.mockReset().mockResolvedValue(undefined);
@@ -97,6 +101,21 @@ function draw() {
       onResize={resized}
     />,
   );
+}
+
+/**
+ * One message's action control, counting from the root down.
+ *
+ * The panel draws the root above the rule and the replies below it, so nth 0
+ * is the message the thread hangs from and 1 is its first reply.
+ */
+function action(name: string, nth: number): HTMLElement {
+  const all = screen.getAllByRole("button", { name });
+  const one = all[nth];
+  if (one === undefined) {
+    throw new Error(`there is no ${name} control on message ${nth}`);
+  }
+  return one;
 }
 
 async function opened(thread: Thread | null = OPEN) {
@@ -261,13 +280,14 @@ describe("ThreadPanel", () => {
     await opened();
 
     await userEvent.type(screen.getByRole("textbox"), "Consort");
-    await userEvent.click(screen.getByRole("button", { name: "Reply" }));
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
 
     await waitFor(() =>
       expect(threadSend).toHaveBeenCalledWith(
         GENERAL,
         "$root:example.org",
         "$a:example.org",
+        null,
         "Consort",
       ),
     );
@@ -279,16 +299,237 @@ describe("ThreadPanel", () => {
     await opened({ ...OPEN, messages: [] });
 
     await userEvent.type(screen.getByRole("textbox"), "first");
-    await userEvent.click(screen.getByRole("button", { name: "Reply" }));
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
 
     await waitFor(() =>
       expect(threadSend).toHaveBeenCalledWith(
         GENERAL,
         "$root:example.org",
         "$root:example.org",
+        null,
         "first",
       ),
     );
+  });
+
+  it("offers a way to answer one reply, and to correct one", async () => {
+    // Both were missing in here while the room beside it had them, which made
+    // a thread the one place a typo could not be fixed.
+    await opened();
+
+    expect(screen.getAllByRole("button", { name: "Reply" })).toHaveLength(2);
+    expect(screen.getAllByRole("button", { name: "Edit" })).toHaveLength(2);
+  });
+
+  it("offers no correction of somebody else's message", async () => {
+    await opened({
+      ...OPEN,
+      messages: [{ ...said("$a:example.org", "Consort"), sender: LIN }],
+    });
+
+    // The root is this account's own, so the count is what says the reply was
+    // passed over rather than that nothing is drawn at all.
+    expect(screen.getAllByRole("button", { name: "Edit" })).toHaveLength(1);
+  });
+
+  it("names the message being answered, and who wrote it", async () => {
+    // The address alone would be the fallback every threaded reply carries,
+    // which Rust reads as decoration and no client draws a quoted row for.
+    await opened();
+
+    await userEvent.click(action("Reply", 1));
+    await userEvent.type(screen.getByRole("textbox"), "quite");
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    await waitFor(() =>
+      expect(threadSend).toHaveBeenCalledWith(
+        GENERAL,
+        "$root:example.org",
+        "$a:example.org",
+        ADA,
+        "quite",
+      ),
+    );
+  });
+
+  it("says above the box what the next reply will answer", async () => {
+    await opened();
+
+    await userEvent.click(action("Reply", 1));
+
+    // Scoped to the line itself, because what it quotes is also still drawn
+    // in the thread above it.
+    const line = screen
+      .getByRole("button", { name: "Stop replying" })
+      .closest("div");
+    expect(line).toHaveTextContent("Ada");
+    expect(line).toHaveTextContent("Consort");
+  });
+
+  it("goes back to answering the thread when the reply is called off", async () => {
+    await opened();
+
+    await userEvent.click(action("Reply", 1));
+    await userEvent.click(screen.getByRole("button", { name: "Stop replying" }));
+    await userEvent.type(screen.getByRole("textbox"), "anyway");
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    await waitFor(() =>
+      expect(threadSend).toHaveBeenCalledWith(
+        GENERAL,
+        "$root:example.org",
+        "$a:example.org",
+        null,
+        "anyway",
+      ),
+    );
+  });
+
+  it("opens the box on what a message says when it is corrected", async () => {
+    await opened();
+
+    await userEvent.click(action("Edit", 1));
+
+    expect(screen.getByRole("textbox")).toHaveValue("Consort");
+  });
+
+  it("corrects the message rather than saying the same thing twice", async () => {
+    await opened();
+
+    await userEvent.click(action("Edit", 1));
+    await userEvent.clear(screen.getByRole("textbox"));
+    await userEvent.type(screen.getByRole("textbox"), "Consort, with a t");
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    await waitFor(() =>
+      expect(timelineEdit).toHaveBeenCalledWith(
+        GENERAL,
+        "$a:example.org",
+        "Consort, with a t",
+      ),
+    );
+    expect(threadSend).not.toHaveBeenCalled();
+  });
+
+  it("corrects the message the thread hangs from as readily as a reply", async () => {
+    // It is drawn above the rule rather than in the list, and it is still a
+    // message this account sent.
+    await opened();
+
+    await userEvent.click(action("Edit", 0));
+    await userEvent.clear(screen.getByRole("textbox"));
+    await userEvent.type(screen.getByRole("textbox"), "what shall we call it?");
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    await waitFor(() =>
+      expect(timelineEdit).toHaveBeenCalledWith(
+        GENERAL,
+        "$root:example.org",
+        "what shall we call it?",
+      ),
+    );
+  });
+
+  it("empties the box when a correction is called off", async () => {
+    // What is in there is the old message rather than something somebody
+    // typed, so leaving it would put a sentence already in the thread into
+    // the next reply.
+    await opened();
+
+    await userEvent.click(action("Edit", 1));
+    await userEvent.click(screen.getByRole("button", { name: "Stop editing" }));
+
+    expect(screen.getByRole("textbox")).toHaveValue("");
+  });
+
+  it("keeps a correction and a reply from both being on at once", async () => {
+    // One box with one Send cannot have two things to do.
+    await opened();
+
+    await userEvent.click(action("Reply", 1));
+    await userEvent.click(action("Edit", 1));
+
+    expect(screen.queryByRole("button", { name: "Stop replying" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Stop editing" })).toBeVisible();
+  });
+
+  it("says so when the correction is refused, and keeps what was typed", async () => {
+    timelineEdit.mockRejectedValue({ message: "The homeserver refused that." });
+    await opened();
+
+    await userEvent.click(action("Edit", 1));
+    await userEvent.type(screen.getByRole("textbox"), "!");
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    expect(
+      await screen.findByText("The homeserver refused that."),
+    ).toBeVisible();
+    expect(screen.getByRole("textbox")).toHaveValue("Consort!");
+  });
+
+  it("puts the box back to an ordinary reply once the correction lands", async () => {
+    await opened();
+
+    await userEvent.click(action("Edit", 1));
+    await userEvent.type(screen.getByRole("textbox"), "!");
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Stop editing" })).toBeNull(),
+    );
+    expect(screen.getByRole("textbox")).toHaveValue("");
+  });
+
+  it("ends the correction on escape rather than shutting the panel", async () => {
+    // The panel's own escape listener is on the window, one step further out,
+    // so without stopping the key here one press would do both.
+    await opened();
+
+    await userEvent.click(action("Edit", 1));
+    await userEvent.type(screen.getByRole("textbox"), "{Escape}");
+
+    expect(screen.queryByRole("button", { name: "Stop editing" })).toBeNull();
+    expect(threadOpen).not.toHaveBeenCalled();
+  });
+
+  it("keeps a half-written reply when the reply it answers is called off", async () => {
+    // Calling off a reply is not calling off what somebody typed. Only a
+    // correction empties the box, because there it is the old message.
+    await opened();
+
+    await userEvent.click(action("Reply", 1));
+    await userEvent.type(screen.getByRole("textbox"), "most of a sentence");
+    await userEvent.type(screen.getByRole("textbox"), "{Escape}");
+
+    expect(screen.queryByRole("button", { name: "Stop replying" })).toBeNull();
+    expect(screen.getByRole("textbox")).toHaveValue("most of a sentence");
+  });
+
+  it("still shuts on escape when the box is an ordinary reply", async () => {
+    await opened();
+
+    await userEvent.type(screen.getByRole("textbox"), "{Escape}");
+
+    expect(threadOpen).toHaveBeenCalledWith(null);
+  });
+
+  it("leaves nothing of one thread in the box when another is opened", async () => {
+    // A message from the thread that was closed is not something the one now
+    // open can answer, and the old text would go out as a new reply.
+    await opened();
+
+    await userEvent.click(action("Edit", 1));
+    await act(async () => {
+      publish({
+        roomId: GENERAL,
+        rootId: "$other:example.org",
+        messages: [said("$b:example.org", "somewhere else")],
+        moreBefore: false,
+      });
+    });
+
+    expect(screen.queryByRole("button", { name: "Stop editing" })).toBeNull();
+    expect(screen.getByRole("textbox")).toHaveValue("");
   });
 
   it("keeps what was typed when the send failed", async () => {
@@ -297,7 +538,7 @@ describe("ThreadPanel", () => {
     await opened();
 
     await userEvent.type(screen.getByRole("textbox"), "Consort");
-    await userEvent.click(screen.getByRole("button", { name: "Reply" }));
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
 
     expect(
       await screen.findByText("The homeserver refused that."),
@@ -309,7 +550,7 @@ describe("ThreadPanel", () => {
     await opened();
 
     await userEvent.type(screen.getByRole("textbox"), "Consort");
-    await userEvent.click(screen.getByRole("button", { name: "Reply" }));
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
 
     await waitFor(() => expect(screen.getByRole("textbox")).toHaveValue(""));
   });
@@ -317,7 +558,7 @@ describe("ThreadPanel", () => {
   it("sends nothing when nothing has been typed", async () => {
     await opened();
 
-    await userEvent.click(screen.getByRole("button", { name: "Reply" }));
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
 
     expect(threadSend).not.toHaveBeenCalled();
   });

@@ -75,7 +75,7 @@ use matrix_sdk::ruma::events::reaction::ReactionEventContent;
 use matrix_sdk::ruma::events::relation::Annotation;
 use matrix_sdk::ruma::events::relation::Thread as ThreadRelation;
 use matrix_sdk::ruma::events::room::message::{
-    AddMentions, ForwardThread, Relation, ReplyMetadata, RoomMessageEventContent,
+    AddMentions, ForwardThread, Relation, ReplyMetadata, ReplyWithinThread, RoomMessageEventContent,
 };
 use matrix_sdk::ruma::events::{AnySyncEphemeralRoomEvent, AnySyncTimelineEvent};
 use matrix_sdk::ruma::serde::Raw;
@@ -1302,26 +1302,58 @@ pub async fn send_edit(client: &Client, room_id: &str, event_id: &str, body: &st
     Ok(())
 }
 
-/// Say something in a thread.
+/// Say something in a thread, answering one reply in it or none.
 ///
-/// `latest_id` is the last thing said in the thread as far as the caller
-/// knows, and it goes on the reply fallback rather than on the relation
-/// itself. A client that understands threads reads `event_id` and puts this in
-/// the right conversation; one that does not sees an ordinary reply pointing
-/// at whatever was being answered, which is the whole reason the fallback is
-/// there. Stale is harmless: nothing about which thread this belongs to
-/// depends on it.
+/// `in_reply_to` is what the `m.in_reply_to` points at, and `answering` is who
+/// wrote it. The two cases differ only in that pair and in one boolean, and
+/// the boolean is the whole of what tells them apart on the way back in.
+///
+/// With no `answering`, this is just another reply and `in_reply_to` is the
+/// last thing said in the thread as far as the caller knows. It is falling
+/// back: a client that understands threads reads `event_id` and puts the
+/// message in the right conversation, one that does not sees an ordinary reply
+/// pointing at whatever was being answered, and `facts::answering` ignores it
+/// so that a panel does not draw a quoted row on every line in it. Stale is
+/// harmless, because nothing about which thread this belongs to depends on it.
+///
+/// With one, this answers that message and says so. `in_reply_to` is the
+/// message being answered rather than the newest, the fallback flag comes off,
+/// and the author is mentioned, on the same terms and for the same reason as a
+/// reply in the room: an answer nobody is notified of is a line in a panel
+/// that is not open.
 pub async fn send_in_thread(
     client: &Client,
     room_id: &str,
     root_id: &str,
-    latest_id: &str,
+    in_reply_to: &str,
+    answering: Option<&str>,
     body: &str,
 ) -> Result<()> {
     let mut content = written(body)?;
     let root = event_id_of(root_id)?;
-    let latest = event_id_of(latest_id)?;
-    content.relates_to = Some(Relation::Thread(ThreadRelation::plain(root, latest)));
+    let answered = event_id_of(in_reply_to)?;
+
+    let content = match answering {
+        None => {
+            content.relates_to = Some(Relation::Thread(ThreadRelation::plain(root, answered)));
+            content
+        }
+        Some(sender) => {
+            let author = UserId::parse(sender).map_err(|_| Error::NoSuchUser {
+                user_id: sender.to_owned(),
+            })?;
+            // Which thread, handed in rather than read off the message being
+            // answered. `make_for_thread` takes the root from this and would
+            // otherwise start a new thread rooted at the answered message,
+            // which is a second conversation where somebody meant a sentence.
+            let thread = ThreadRelation::without_fallback(root);
+            content.make_for_thread(
+                ReplyMetadata::new(&answered, &author, Some(&thread)),
+                ReplyWithinThread::Yes,
+                AddMentions::Yes,
+            )
+        }
+    };
 
     room_of(client, room_id)?.send(content).await?;
     Ok(())

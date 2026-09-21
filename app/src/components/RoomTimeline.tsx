@@ -9,7 +9,6 @@ import {
 
 import { flashMessage } from "../lib/flash";
 import { channelLabel, typingLabel } from "../lib/labels";
-import { useRoomLinks } from "../lib/roomLinks";
 import {
   asCommandError,
   attachFile,
@@ -43,14 +42,13 @@ import {
   type Participant,
   type Timeline,
 } from "../lib/api";
+import { ComposerTarget } from "./ComposerTarget";
 import {
   MessageGroups,
   correctable,
-  ReplyIcon,
   firstOfEachDay,
   firstUnread,
   group,
-  previewOf,
 } from "./MessageGroups";
 import { PersonMenu } from "./PersonMenu";
 import { SidebarToggle } from "./SidebarToggle";
@@ -131,32 +129,6 @@ function PaperclipIcon({ className }: { className?: string }) {
       aria-hidden="true"
     >
       <path d="M21 12.5 12.9 20.6a5 5 0 0 1-7.1-7.1l8.5-8.5a3.3 3.3 0 0 1 4.7 4.7l-8.5 8.5a1.7 1.7 0 0 1-2.4-2.4l7.8-7.8" />
-    </svg>
-  );
-}
-
-/**
- * The mark on the line above the box, when the box is correcting a message.
- *
- * The same pencil the action row draws, at the size the line above the box
- * uses. Here rather than imported from `MessageGroups` for the reason the
- * paperclip is here: that file's glyphs are sized and coloured for the hover
- * row over a message, and this one is a label on the composer.
- */
-function EditingIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      className={className}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M17 3a2.8 2.8 0 0 1 4 4L7.5 20.5 2 22l1.5-5.5z" />
-      <path d="m15 5 4 4" />
     </svg>
   );
 }
@@ -313,10 +285,6 @@ export function RoomTimeline({
   const [atTheBottom, setAtTheBottom] = useState(false);
   /** Who is typing in this room, as Matrix user IDs, ours already removed. */
   const [typists, setTypists] = useState<string[]>([]);
-
-  // For the line above the composer, which quotes a message and so needs the
-  // same words the message's own badge draws.
-  const { nameOf } = useRoomLinks();
 
   const scroller = useRef<HTMLDivElement>(null);
   /*
@@ -1255,51 +1223,17 @@ export function RoomTimeline({
         again, and the row above the answer is drawn from the relation.
       */}
       {answering !== null && (
-        <div className="timeline__answering">
-          <ReplyIcon className="timeline__answering-glyph" />
-          <span className="timeline__answering-who">
-            {names[answering.sender] ?? answering.sender}
-          </span>
-          <span className="timeline__answering-said">
-            {previewOf(answering, nameOf)}
-          </span>
-          <button
-            type="button"
-            className="timeline__answering-stop"
-            aria-label="Stop replying"
-            onClick={() => setAnswering(null)}
-          >
-            &times;
-          </button>
-        </div>
+        <ComposerTarget
+          doing="reply"
+          who={names[answering.sender] ?? answering.sender}
+          message={answering}
+          onStop={() => setAnswering(null)}
+        />
       )}
 
-      {/*
-        Which message the box is about to change, above the box that changes
-        it. Drawn on the same terms as the reply line above, and never at the
-        same time as one: the two modes are exclusive and setting either clears
-        the other.
-
-        It quotes the message as it stands rather than as it will be. What the
-        box holds is the edit being written, and having both would be the same
-        sentence twice.
-      */}
+      {/* The same line, for the other thing the box can be pointed at. */}
       {editing !== null && (
-        <div className="timeline__answering">
-          <EditingIcon className="timeline__answering-glyph" />
-          <span className="timeline__answering-who">Editing</span>
-          <span className="timeline__answering-said">
-            {previewOf(editing, nameOf)}
-          </span>
-          <button
-            type="button"
-            className="timeline__answering-stop"
-            aria-label="Stop editing"
-            onClick={stopEditing}
-          >
-            &times;
-          </button>
-        </div>
+        <ComposerTarget doing="edit" message={editing} onStop={stopEditing} />
       )}
 
       {/*

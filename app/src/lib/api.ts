@@ -1783,20 +1783,33 @@ export function threadOpen(rootId: string | null): Promise<void> {
 }
 
 /**
- * Say something in a thread.
+ * Say something in a thread, answering one reply in it or none.
  *
- * `latestId` is the last reply the panel is showing, or the root when it is
+ * `inReplyTo` is the last reply the panel is showing, or the root when it is
  * showing none. It only decorates the reply fallback a client that knows
  * nothing about threads draws, so a stale one changes nothing about which
  * thread the message lands in.
+ *
+ * `answering` is who wrote the message being answered, and passing it is what
+ * makes this a real answer rather than that fallback: `inReplyTo` is then the
+ * message somebody pressed Reply on, the panel draws a quoted row above the
+ * result, and the author is mentioned. Null is the ordinary case, which is a
+ * reply to the thread rather than to one line of it.
  */
 export function threadSend(
   roomId: string,
   rootId: string,
-  latestId: string,
+  inReplyTo: string,
+  answering: string | null,
   body: string,
 ): Promise<void> {
-  return invoke<void>("thread_send", { roomId, rootId, latestId, body });
+  return invoke<void>("thread_send", {
+    roomId,
+    rootId,
+    inReplyTo,
+    answering,
+    body,
+  });
 }
 
 /**

@@ -211,9 +211,9 @@ function attachmentKind(
  * fallback the sender writes for clients that draw no reply of their own, and
  * they arrived as a link that went nowhere.
  *
- * Exported because the room's composer draws the same arrow in front of what
- * is about to be answered, and one glyph drawn twice beats two that have to be
- * kept looking alike.
+ * Exported because the line above a composer draws the same arrow in front of
+ * what is about to be answered, and one glyph drawn twice beats two that have
+ * to be kept looking alike.
  */
 export function ReplyIcon({ className }: { className: string }) {
   return (
@@ -536,14 +536,15 @@ export function MessageGroups({
    */
   onOpenThread?: (rootId: string) => void;
   /**
-   * Answer a message in the room it is in.
+   * Answer a message in the conversation it is in.
    *
    * The whole message rather than its ID, because the composer draws a line of
    * what is being answered and the reply itself has to name who wrote it.
    *
-   * Absent inside a thread panel, where answering is what the box at the
-   * bottom already does and a second kind of reply would be two controls with
-   * one meaning.
+   * The thread panel passes this too. The box at the bottom of it answers the
+   * thread, which is not the same as answering one line of a long one: a
+   * thread reply that names nobody carries an `m.in_reply_to` that is falling
+   * back, and no client draws a quoted row for that.
    */
   onReply?: (message: Message) => void;
   /**
@@ -553,8 +554,7 @@ export function MessageGroups({
    * it currently says and an ID alone cannot fill the box.
    *
    * The control is drawn only where [`correctable`] says it can be, which is
-   * the reader's own plain-text messages. Absent inside a thread panel, which
-   * has no composer mode for an edit.
+   * the reader's own plain-text messages.
    */
   onEdit?: (message: Message) => void;
   /**

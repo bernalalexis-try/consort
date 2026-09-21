@@ -484,18 +484,28 @@ pub async fn timeline_edit_for(
 /// Say something in a thread.
 ///
 /// The same as saying something in the room, with the relation that puts it in
-/// the thread rather than under it. `latest_id` is the last thing the panel is
-/// showing, and it only decorates the reply fallback a client that knows
-/// nothing about threads draws.
+/// the thread rather than under it. `in_reply_to` is the last thing the panel
+/// is showing, which only decorates the reply fallback a client that knows
+/// nothing about threads draws, unless `answering` names an author: then it is
+/// the message being answered and the reply is a real one.
 pub async fn thread_send_for(
     state: &AppState,
     room_id: String,
     root_id: String,
-    latest_id: String,
+    in_reply_to: String,
+    answering: Option<String>,
     body: String,
 ) -> Result<(), CommandError> {
     let client = signed_in_client(state).await?;
-    timeline::send_in_thread(&client, &room_id, &root_id, &latest_id, &body).await?;
+    timeline::send_in_thread(
+        &client,
+        &room_id,
+        &root_id,
+        &in_reply_to,
+        answering.as_deref(),
+        &body,
+    )
+    .await?;
     Ok(())
 }
 
@@ -1462,10 +1472,11 @@ pub async fn thread_send(
     state: State<'_, AppState>,
     room_id: String,
     root_id: String,
-    latest_id: String,
+    in_reply_to: String,
+    answering: Option<String>,
     body: String,
 ) -> Result<(), CommandError> {
-    thread_send_for(&state, room_id, root_id, latest_id, body).await
+    thread_send_for(&state, room_id, root_id, in_reply_to, answering, body).await
 }
 
 /// See `timeline_reply_for`.
@@ -4190,6 +4201,7 @@ mod against_a_mock_homeserver {
                 GENERAL.to_owned(),
                 "$root:example.org".to_owned(),
                 "$last:example.org".to_owned(),
+                None,
                 "hello".to_owned(),
             )
             .await

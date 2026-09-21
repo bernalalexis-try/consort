@@ -1,0 +1,70 @@
+/*
+  What the box is about to do to a message, above the box that does it: the
+  message a reply will answer, or the one an edit will change. One treatment
+  for both, because the two are one line in one place saying which message the
+  composer is pointed at, and never drawn at the same time as each other.
+
+  It appears and disappears, which does move the conversation above it, and
+  that is the difference between this and the typing line: this moves because
+  somebody pressed Reply or Edit, and a control that produces no visible change
+  is a control nobody can tell they used.
+
+  The side margin is the padding both composers have, so the line sits over the
+  box rather than beside it in the room and in the thread panel alike.
+*/
+.composer-target {
+  display: flex;
+  flex: none;
+  gap: var(--space-2);
+  align-items: center;
+  margin: 0 var(--space-6) var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-raised);
+  border: 1px solid var(--line-subtle);
+  border-radius: var(--radius-md);
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+
+.composer-target__glyph {
+  flex: none;
+  width: 14px;
+  height: 14px;
+}
+
+.composer-target__who {
+  flex: none;
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+.composer-target__said {
+  overflow: hidden;
+  /* One line, whatever was said. A reply to a paragraph would otherwise push
+     the box off the bottom of the window. */
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-target__stop {
+  flex: none;
+  margin-left: auto;
+  padding: 0 var(--space-1);
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: var(--text-base);
+  line-height: 1;
+  cursor: pointer;
+}
+
+.composer-target__stop:hover {
+  color: var(--text-primary);
+}
+
+.composer-target__stop:focus-visible {
+  outline: none;
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-focus);
+}
