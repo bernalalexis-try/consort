@@ -18,6 +18,7 @@ import {
   type Verification,
   type VerificationFlow,
 } from "../lib/api";
+import { useHistory } from "../lib/history";
 import { channelLabel } from "../lib/labels";
 import type { PlaceTarget } from "../lib/matrixTo";
 import { RoomLinksContext, type RoomLinks } from "../lib/roomLinks";
@@ -223,8 +224,13 @@ export function AppShell({
   showRoom = null,
   onSignedOut,
 }: Props) {
-  const [spaceId, setSpaceId] = useState(HOME_ID);
-  const [channelId, setChannelId] = useState<string | null>(null);
+  /*
+    Where the shell is, and everywhere it has been. The window's own history
+    rather than a pair of plain states, because the two extra buttons on a
+    mouse are the browser's Back and Forward and reach the page as a traversal.
+    A selection kept privately would be a history those buttons could not move.
+  */
+  const [where, goTo] = useHistory({ spaceId: HOME_ID, channelId: null });
   const [settingsOpen, setSettingsOpen] = useState(false);
   /*
     Whether the channel list is folded away. Here rather than in the list,
@@ -266,17 +272,17 @@ export function AppShell({
     rather than two.
   */
   const space =
-    rooms.spaces.find((candidate) => candidate.id === spaceId) ??
+    rooms.spaces.find((candidate) => candidate.id === where.spaceId) ??
     rooms.spaces[0] ??
     null;
   const channel =
-    space?.channels.find((candidate) => candidate.id === channelId) ?? null;
+    space?.channels.find((candidate) => candidate.id === where.channelId) ??
+    null;
 
   function selectSpace(id: string) {
-    setSpaceId(id);
     // A channel belongs to the space it was picked in. Carrying the selection
     // across would leave a channel highlighted in a list it is not in.
-    setChannelId(null);
+    goTo({ spaceId: id, channelId: null });
   }
 
   /**
@@ -306,11 +312,10 @@ export function AppShell({
         candidate.channels.some((channel) => channel.id === roomId),
       );
       if (holder === undefined) return false;
-      setSpaceId(holder.id);
-      setChannelId(roomId);
+      goTo({ spaceId: holder.id, channelId: roomId });
       return true;
     },
-    [rooms],
+    [rooms, goTo],
   );
 
   /**
@@ -366,7 +371,7 @@ export function AppShell({
   );
 
   function selectChannel(id: string) {
-    setChannelId(id);
+    goTo({ spaceId: space?.id ?? HOME_ID, channelId: id });
 
     const chosen = space?.channels.find((candidate) => candidate.id === id);
     if (chosen?.kind === "voice") onJoinVoice(id);
