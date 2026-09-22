@@ -233,6 +233,7 @@ pub fn run() {
             commands::room_at,
             commands::direct_room,
             commands::timeline_copy_link,
+            commands::room_copy_link,
             commands::timeline_media_save,
             commands::attachment_pick,
             commands::timeline_attach_file,

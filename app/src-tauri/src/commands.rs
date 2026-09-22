@@ -623,6 +623,18 @@ pub async fn timeline_permalink_for(
     Ok(timeline::permalink(&client, &room_id, &event_id).await?)
 }
 
+/// A `matrix.to` address for one room, to give to somebody else.
+///
+/// Split from its copy for the reason the message address above is. Separate
+/// from that one because the two are not addressed the same way: an event is
+/// named by room ID, because an alias can be moved to a different room and the
+/// link would follow it, while a room is best named by the alias it published,
+/// because that is the half of the address a person can read.
+pub async fn room_permalink_for(state: &AppState, room_id: String) -> Result<String, CommandError> {
+    let client = signed_in_client(state).await?;
+    Ok(rooms::permalink(&client, &room_id).await?)
+}
+
 /// The joined room one `matrix.to` address points at.
 ///
 /// An alias costs a directory lookup and a room ID costs nothing, and both
@@ -1811,6 +1823,26 @@ pub async fn timeline_copy_link(
     use tauri_plugin_clipboard_manager::ClipboardExt;
 
     let address = timeline_permalink_for(&state, room_id, event_id).await?;
+
+    app.clipboard()
+        .write_text(address)
+        .map_err(|error| CommandError {
+            message: "Consort could not reach this desktop's clipboard.".to_owned(),
+            detail: format!("writing to the clipboard: {error}"),
+        })
+}
+
+/// Put one room's address on the clipboard. See `timeline_copy_link`, which
+/// this is the room-sized half of and follows exactly.
+#[tauri::command]
+pub async fn room_copy_link(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    room_id: String,
+) -> Result<(), CommandError> {
+    use tauri_plugin_clipboard_manager::ClipboardExt;
+
+    let address = room_permalink_for(&state, room_id).await?;
 
     app.clipboard()
         .write_text(address)
@@ -4273,6 +4305,20 @@ mod against_a_mock_homeserver {
                 timeline_permalink_for(&state, GENERAL.to_owned(), "$said:example.org".to_owned())
                     .await
                     .unwrap_err();
+
+            assert_eq!(
+                refused.message,
+                consort_matrix::Error::NotLoggedIn.user_message()
+            );
+        }
+
+        #[tokio::test]
+        async fn asking_for_a_room_address_while_signed_out_says_so() {
+            let (_dir, state, _sink) = state();
+
+            let refused = room_permalink_for(&state, GENERAL.to_owned())
+                .await
+                .unwrap_err();
 
             assert_eq!(
                 refused.message,

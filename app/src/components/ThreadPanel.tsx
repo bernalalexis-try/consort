@@ -85,6 +85,7 @@ export function clampThreadWidth(width: number): number {
 export function ThreadPanel({
   selfId,
   onOpenRoom,
+  onOpen,
   width,
   onResize,
 }: {
@@ -92,6 +93,15 @@ export function ThreadPanel({
   selfId: string;
   /** Show a room, by ID. Passed to a person's card for its Message button. */
   onOpenRoom: (roomId: string) => void;
+  /**
+   * Said whenever a thread is on screen.
+   *
+   * Which thread is open is Rust's answer rather than the shell's, so the
+   * shell has no other way to learn that this column is now spoken for. It
+   * uses it to put the room's details away: two panels beside a room leave the
+   * room a strip.
+   */
+  onOpen: () => void;
   /** How wide to draw, in pixels. Held by the shell, so a shut panel keeps it. */
   width: number;
   /** Report a width the grip was dragged or nudged to. Already clamped. */
@@ -168,6 +178,10 @@ export function ThreadPanel({
       });
     };
   }, []);
+
+  useEffect(() => {
+    if (thread !== null) onOpen();
+  }, [thread, onOpen]);
 
   const roomId = thread?.roomId ?? "";
   /*

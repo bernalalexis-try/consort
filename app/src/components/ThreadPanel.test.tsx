@@ -97,6 +97,7 @@ function draw() {
     <ThreadPanel
       selfId={ADA}
       onOpenRoom={vi.fn()}
+      onOpen={vi.fn()}
       width={400}
       onResize={resized}
     />,
@@ -595,6 +596,7 @@ describe("the panel's width", () => {
       <ThreadPanel
         selfId={ADA}
         onOpenRoom={vi.fn()}
+      onOpen={vi.fn()}
         width={480}
         onResize={vi.fn()}
       />,

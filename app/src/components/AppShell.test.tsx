@@ -25,6 +25,9 @@ const timelineEarlier = vi.hoisted(() => vi.fn());
 const timelineSend = vi.hoisted(() => vi.fn());
 const memberNames = vi.hoisted(() => vi.fn());
 const roomAt = vi.hoisted(() => vi.fn());
+// The right of the window holds one panel at a time, so asking for a room's
+// details shuts whatever thread was there.
+const threadOpen = vi.hoisted(() => vi.fn());
 vi.mock("../lib/api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/api")>()),
   audioDevices,
@@ -45,6 +48,7 @@ vi.mock("../lib/api", async (importOriginal) => ({
   memberNames,
   roomAt,
   roomAvatar,
+  threadOpen,
 }));
 
 import { AppShell } from "./AppShell";
@@ -59,6 +63,7 @@ import type {
   Profile,
   Rooms,
   SelfAudio,
+  Thread,
   Timeline,
 } from "../lib/api";
 
@@ -191,6 +196,7 @@ describe("AppShell", () => {
     timelineSend.mockReset().mockResolvedValue(undefined);
     memberNames.mockReset().mockResolvedValue({});
     roomAt.mockReset().mockResolvedValue("!tech:example.org");
+    threadOpen.mockReset().mockResolvedValue(undefined);
   });
 
   it("shows the room a notification was clicked to get to", async () => {
@@ -400,6 +406,104 @@ describe("AppShell", () => {
     await userEvent.click(screen.getByRole("button", { name: /close settings/i }));
 
     await waitFor(() => expect(document.activeElement).toBe(gear));
+  });
+
+  describe("a room's details", () => {
+    const GENERAL = "!general:example.org";
+
+    const withRoom: Rooms = {
+      spaces: [
+        {
+          id: "home",
+          name: "Home",
+          avatar: null,
+          channels: [textChannel(GENERAL, "general")],
+        },
+      ],
+    };
+
+    /** Select the room, and hand back its heading, which opens the details. */
+    async function heading() {
+      shell({ rooms: withRoom });
+      await userEvent.click(
+        within(screen.getByRole("region", { name: "Text" })).getByRole(
+          "button",
+          { name: /general/ },
+        ),
+      );
+      // Scoped to the pane, because the row in the list beside it is called
+      // the same thing.
+      return within(screen.getByRole("main")).getByRole("button", {
+        name: "#general",
+      });
+    }
+
+    /** Hand a thread to everybody watching that channel, as Rust would. */
+    function arriveThread() {
+      const thread: Thread = {
+        roomId: GENERAL,
+        rootId: "$root",
+        messages: [],
+        moreBefore: false,
+      };
+      act(() => {
+        for (const [handler] of onThread.mock.calls) {
+          (handler as (value: Thread | null) => void)(thread);
+        }
+      });
+    }
+
+    it("opens them from the room's own heading", async () => {
+      // Issue #85. The heading drew the name and the topic and did nothing
+      // when it was pressed.
+      await userEvent.click(await heading());
+
+      expect(screen.getByRole("heading", { name: "Room info" })).toBeVisible();
+    });
+
+    it("puts them away when the heading is pressed again", async () => {
+      const name = await heading();
+      await userEvent.click(name);
+
+      await userEvent.click(name);
+
+      expect(screen.queryByRole("heading", { name: "Room info" })).toBeNull();
+    });
+
+    it("puts them away from their own close control", async () => {
+      await userEvent.click(await heading());
+
+      await userEvent.click(
+        screen.getByRole("button", { name: "Close room info" }),
+      );
+
+      expect(screen.queryByRole("heading", { name: "Room info" })).toBeNull();
+    });
+
+    it("shuts any open thread on the way up", async () => {
+      // One column, one panel. Both at once leaves the conversation a strip.
+      await userEvent.click(await heading());
+
+      expect(threadOpen).toHaveBeenCalledWith(null);
+    });
+
+    it("gives the column back when a thread arrives", async () => {
+      // The other direction, and the shell cannot ask for it: which thread is
+      // open is Rust's answer, so the panel is what reports one.
+      await userEvent.click(await heading());
+
+      arriveThread();
+
+      expect(screen.queryByRole("heading", { name: "Room info" })).toBeNull();
+    });
+
+    it("draws nothing before a room is picked", async () => {
+      // There is no heading to press in the empty pane, and nothing for a
+      // panel about a room to describe.
+      shell({ rooms: withRoom });
+
+      expect(screen.queryByRole("heading", { name: "Room info" })).toBeNull();
+    });
   });
 
   describe("voice channels", () => {
