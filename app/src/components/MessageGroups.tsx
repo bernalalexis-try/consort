@@ -211,9 +211,9 @@ function attachmentKind(
  * fallback the sender writes for clients that draw no reply of their own, and
  * they arrived as a link that went nowhere.
  *
- * Exported because the room's composer draws the same arrow in front of what
- * is about to be answered, and one glyph drawn twice beats two that have to be
- * kept looking alike.
+ * Exported because the line above a composer draws the same arrow in front of
+ * what is about to be answered, and one glyph drawn twice beats two that have
+ * to be kept looking alike.
  */
 export function ReplyIcon({ className }: { className: string }) {
   return (
@@ -327,6 +327,25 @@ function CopiedIcon() {
   );
 }
 
+/** A pencil: change what this says. */
+function EditIcon() {
+  return (
+    <svg
+      className="timeline__action-glyph"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M17 3a2.8 2.8 0 0 1 4 4L7.5 20.5 2 22l1.5-5.5z" />
+      <path d="m15 5 4 4" />
+    </svg>
+  );
+}
+
 function ThreadIcon() {
   return (
     <svg
@@ -382,6 +401,49 @@ function DaySeparator({ label }: { label: string }) {
 }
 
 /**
+ * Whether the reader could correct this message, if a caller offers the way.
+ *
+ * Their own, and one of the three kinds an edit can replace. The list is not a
+ * subset of what the interface can draw: it is exactly what `facts::replacement`
+ * in Rust reads back out, so a control never appears where pressing it would
+ * send a correction no client would fold.
+ *
+ * An attachment is the case worth naming. An edit carries replacement text,
+ * and the SDK would happily build one that swaps a picture for a sentence; the
+ * caption is the thing somebody would mean to change, and there is no surface
+ * for that yet.
+ */
+export function correctable(message: Message, selfId: string): boolean {
+  return (
+    message.sender === selfId &&
+    (message.kind === "text" ||
+      message.kind === "emote" ||
+      message.kind === "notice")
+  );
+}
+
+/**
+ * The mark on a message its author has since corrected.
+ *
+ * Inside the body and at the end of the words rather than on a line of its
+ * own. A row would space the conversation out by a line on every message
+ * anybody has ever fixed a typo in, and what it says is a footnote to the
+ * sentence rather than a statement beside it.
+ *
+ * What it said before is deliberately not offered. Nothing here holds it: the
+ * superseded text never crosses the IPC, because a client that kept a copy of
+ * every sentence somebody took back is a client people would stop correcting
+ * themselves in.
+ */
+function EditedMark() {
+  return (
+    <span className="timeline__edited" title="This message was edited">
+      (edited)
+    </span>
+  );
+}
+
+/**
  * A run of grouped messages, drawn.
  *
  * Its own component because a thread panel draws the same thing beside the
@@ -405,6 +467,7 @@ export function MessageGroups({
   onAbout,
   onOpenThread,
   onReply,
+  onEdit,
   onReact,
   onCopyLink,
   onGoTo,
@@ -473,16 +536,27 @@ export function MessageGroups({
    */
   onOpenThread?: (rootId: string) => void;
   /**
-   * Answer a message in the room it is in.
+   * Answer a message in the conversation it is in.
    *
    * The whole message rather than its ID, because the composer draws a line of
    * what is being answered and the reply itself has to name who wrote it.
    *
-   * Absent inside a thread panel, where answering is what the box at the
-   * bottom already does and a second kind of reply would be two controls with
-   * one meaning.
+   * The thread panel passes this too. The box at the bottom of it answers the
+   * thread, which is not the same as answering one line of a long one: a
+   * thread reply that names nobody carries an `m.in_reply_to` that is falling
+   * back, and no client draws a quoted row for that.
    */
   onReply?: (message: Message) => void;
+  /**
+   * Correct a message this account sent.
+   *
+   * The whole message rather than its ID, because the composer opens on what
+   * it currently says and an ID alone cannot fill the box.
+   *
+   * The control is drawn only where [`correctable`] says it can be, which is
+   * the reader's own plain-text messages.
+   */
+  onEdit?: (message: Message) => void;
   /**
    * React to a message, or take a reaction back.
    *
@@ -789,6 +863,7 @@ export function MessageGroups({
                                 ) : (
                                   <FormattedBody html={message.html} />
                                 )}
+                                {message.edited && <EditedMark />}
                               </div>
                             )}
                           </div>
@@ -827,6 +902,7 @@ export function MessageGroups({
                             ) : (
                               <FormattedBody html={message.html} />
                             )}
+                            {message.edited && <EditedMark />}
                           </div>
                         )}
                         {message.thread !== undefined &&
@@ -903,6 +979,18 @@ export function MessageGroups({
                           in it takes focus.
                         */}
                         <div className="timeline__actions">
+                          {onEdit !== undefined &&
+                            correctable(message, selfId) && (
+                              <button
+                                type="button"
+                                className="timeline__action"
+                                aria-label="Edit"
+                                title="Edit"
+                                onClick={() => onEdit(message)}
+                              >
+                                <EditIcon />
+                              </button>
+                            )}
                           {onReply !== undefined && (
                             <button
                               type="button"

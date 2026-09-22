@@ -72,6 +72,7 @@ import {
   NO_TIMELINE,
   timelineCopyLink,
   timelineGoTo,
+  timelineEdit,
   timelineReact,
   timelineReply,
   timelineMarkRead,
@@ -316,14 +317,37 @@ describe("threads", () => {
       "!general:example.org",
       "$root:example.org",
       "$last:example.org",
+      null,
       "Consort",
     );
 
     expect(invoke).toHaveBeenCalledWith("thread_send", {
       roomId: "!general:example.org",
       rootId: "$root:example.org",
-      latestId: "$last:example.org",
+      inReplyTo: "$last:example.org",
+      answering: null,
       body: "Consort",
+    });
+  });
+
+  it("names the author when a reply is answering one message rather than the last", async () => {
+    // Who wrote it is what turns the fallback into a real answer in Rust, so
+    // a reply that carried the address without the name would be drawn as one
+    // more line at the bottom of the thread.
+    await threadSend(
+      "!general:example.org",
+      "$root:example.org",
+      "$said:example.org",
+      "@ada:example.org",
+      "quite",
+    );
+
+    expect(invoke).toHaveBeenCalledWith("thread_send", {
+      roomId: "!general:example.org",
+      rootId: "$root:example.org",
+      inReplyTo: "$said:example.org",
+      answering: "@ada:example.org",
+      body: "quite",
     });
   });
 
@@ -356,6 +380,23 @@ describe("replies and links", () => {
       replyTo: "$said:example.org",
       sender: "@ada:example.org",
       body: "quite",
+    });
+  });
+
+  it("names the message being corrected and nothing about who sent it", async () => {
+    // No sender rides along, unlike a reply. Who wrote it is read off the
+    // target event in Rust, and taking the webview's word for it would be
+    // taking the webview's word for who may rewrite whom.
+    await timelineEdit(
+      "!general:example.org",
+      "$said:example.org",
+      "corrected",
+    );
+
+    expect(invoke).toHaveBeenCalledWith("timeline_edit", {
+      roomId: "!general:example.org",
+      eventId: "$said:example.org",
+      body: "corrected",
     });
   });
 

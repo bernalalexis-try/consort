@@ -223,6 +223,7 @@ pub fn run() {
             commands::thread_send,
             commands::timeline_send,
             commands::timeline_reply,
+            commands::timeline_edit,
             commands::timeline_react,
             commands::timeline_unreact,
             commands::timeline_typing,

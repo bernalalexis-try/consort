@@ -1346,6 +1346,17 @@ export interface Message {
    * most of them.
    */
   reactions?: Reaction[];
+  /**
+   * Whether what is drawn is a correction rather than what was first sent.
+   *
+   * The flag alone. What it said before does not cross the IPC: there is no
+   * edit history here, and putting the superseded sentence on the wire would
+   * be shipping something somebody deliberately took back.
+   *
+   * Absent rather than false for the messages nobody edited, which is almost
+   * all of them.
+   */
+  edited?: boolean;
   kind: MessageKind;
 }
 
@@ -1772,20 +1783,33 @@ export function threadOpen(rootId: string | null): Promise<void> {
 }
 
 /**
- * Say something in a thread.
+ * Say something in a thread, answering one reply in it or none.
  *
- * `latestId` is the last reply the panel is showing, or the root when it is
+ * `inReplyTo` is the last reply the panel is showing, or the root when it is
  * showing none. It only decorates the reply fallback a client that knows
  * nothing about threads draws, so a stale one changes nothing about which
  * thread the message lands in.
+ *
+ * `answering` is who wrote the message being answered, and passing it is what
+ * makes this a real answer rather than that fallback: `inReplyTo` is then the
+ * message somebody pressed Reply on, the panel draws a quoted row above the
+ * result, and the author is mentioned. Null is the ordinary case, which is a
+ * reply to the thread rather than to one line of it.
  */
 export function threadSend(
   roomId: string,
   rootId: string,
-  latestId: string,
+  inReplyTo: string,
+  answering: string | null,
   body: string,
 ): Promise<void> {
-  return invoke<void>("thread_send", { roomId, rootId, latestId, body });
+  return invoke<void>("thread_send", {
+    roomId,
+    rootId,
+    inReplyTo,
+    answering,
+    body,
+  });
 }
 
 /**
@@ -1817,6 +1841,26 @@ export function timelineReply(
   body: string,
 ): Promise<void> {
   return invoke<void>("timeline_reply", { roomId, replyTo, sender, body });
+}
+
+/**
+ * Correct a message this account sent.
+ *
+ * No sender rides along, unlike a reply. Who wrote the message is read off the
+ * target event in Rust before the edit is built, and it is what decides
+ * whether the edit is allowed at all; taking this side's word for it would be
+ * taking the webview's word for who may rewrite whom.
+ *
+ * Nothing is echoed. The correction appears when the sync brings it back,
+ * which is the path every other send here takes, so the old text is on screen
+ * for the round trip.
+ */
+export function timelineEdit(
+  roomId: string,
+  eventId: string,
+  body: string,
+): Promise<void> {
+  return invoke<void>("timeline_edit", { roomId, eventId, body });
 }
 
 /**

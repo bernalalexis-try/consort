@@ -464,21 +464,48 @@ pub async fn timeline_reply_for(
     Ok(())
 }
 
+/// Correct a message this account sent.
+///
+/// The event ID alone, with no sender riding along: who wrote it is what the
+/// SDK reads off the target event before it will build anything, and taking
+/// the caller's word for it would be taking the webview's word for who is
+/// allowed to rewrite whom.
+pub async fn timeline_edit_for(
+    state: &AppState,
+    room_id: String,
+    event_id: String,
+    body: String,
+) -> Result<(), CommandError> {
+    let client = signed_in_client(state).await?;
+    timeline::send_edit(&client, &room_id, &event_id, &body).await?;
+    Ok(())
+}
+
 /// Say something in a thread.
 ///
 /// The same as saying something in the room, with the relation that puts it in
-/// the thread rather than under it. `latest_id` is the last thing the panel is
-/// showing, and it only decorates the reply fallback a client that knows
-/// nothing about threads draws.
+/// the thread rather than under it. `in_reply_to` is the last thing the panel
+/// is showing, which only decorates the reply fallback a client that knows
+/// nothing about threads draws, unless `answering` names an author: then it is
+/// the message being answered and the reply is a real one.
 pub async fn thread_send_for(
     state: &AppState,
     room_id: String,
     root_id: String,
-    latest_id: String,
+    in_reply_to: String,
+    answering: Option<String>,
     body: String,
 ) -> Result<(), CommandError> {
     let client = signed_in_client(state).await?;
-    timeline::send_in_thread(&client, &room_id, &root_id, &latest_id, &body).await?;
+    timeline::send_in_thread(
+        &client,
+        &room_id,
+        &root_id,
+        &in_reply_to,
+        answering.as_deref(),
+        &body,
+    )
+    .await?;
     Ok(())
 }
 
@@ -1445,10 +1472,11 @@ pub async fn thread_send(
     state: State<'_, AppState>,
     room_id: String,
     root_id: String,
-    latest_id: String,
+    in_reply_to: String,
+    answering: Option<String>,
     body: String,
 ) -> Result<(), CommandError> {
-    thread_send_for(&state, room_id, root_id, latest_id, body).await
+    thread_send_for(&state, room_id, root_id, in_reply_to, answering, body).await
 }
 
 /// See `timeline_reply_for`.
@@ -1461,6 +1489,17 @@ pub async fn timeline_reply(
     body: String,
 ) -> Result<(), CommandError> {
     timeline_reply_for(&state, room_id, reply_to, sender, body).await
+}
+
+/// See `timeline_edit_for`.
+#[tauri::command]
+pub async fn timeline_edit(
+    state: State<'_, AppState>,
+    room_id: String,
+    event_id: String,
+    body: String,
+) -> Result<(), CommandError> {
+    timeline_edit_for(&state, room_id, event_id, body).await
 }
 
 /// See `timeline_react_for`.
@@ -4162,6 +4201,7 @@ mod against_a_mock_homeserver {
                 GENERAL.to_owned(),
                 "$root:example.org".to_owned(),
                 "$last:example.org".to_owned(),
+                None,
                 "hello".to_owned(),
             )
             .await
@@ -4194,6 +4234,27 @@ mod against_a_mock_homeserver {
                 "$said:example.org".to_owned(),
                 "@ada:example.org".to_owned(),
                 "quite".to_owned(),
+            )
+            .await
+            .unwrap_err();
+
+            assert_eq!(
+                refused.message,
+                consort_matrix::Error::NotLoggedIn.user_message()
+            );
+        }
+
+        #[tokio::test]
+        async fn editing_a_message_while_signed_out_is_refused_first() {
+            // Before the room, before the event, and before the round trip
+            // `make_edit_event` would make to read the target.
+            let (_dir, state, _sink) = state();
+
+            let refused = timeline_edit_for(
+                &state,
+                GENERAL.to_owned(),
+                "$said:example.org".to_owned(),
+                "corrected".to_owned(),
             )
             .await
             .unwrap_err();

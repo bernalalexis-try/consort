@@ -27,6 +27,7 @@ const pasteAttachment = vi.hoisted(() => vi.fn());
 const timelineTyping = vi.hoisted(() => vi.fn());
 const timelineSend = vi.hoisted(() => vi.fn());
 const timelineReply = vi.hoisted(() => vi.fn());
+const timelineEdit = vi.hoisted(() => vi.fn());
 const timelineCopyLink = vi.hoisted(() => vi.fn());
 const timelineMarkRead = vi.hoisted(() => vi.fn());
 const memberNames = vi.hoisted(() => vi.fn());
@@ -62,6 +63,7 @@ vi.mock("../lib/api", async (importOriginal) => ({
   timelineTyping,
   timelineSend,
   timelineReply,
+  timelineEdit,
   timelineCopyLink,
   timelineMarkRead,
   memberNames,
@@ -199,6 +201,7 @@ beforeEach(() => {
   timelinePresent.mockReset().mockResolvedValue(undefined);
   timelineSend.mockReset().mockResolvedValue(undefined);
   timelineReply.mockReset().mockResolvedValue(undefined);
+  timelineEdit.mockReset().mockResolvedValue(undefined);
   timelineCopyLink.mockReset().mockResolvedValue(undefined);
   timelineMarkRead.mockReset().mockResolvedValue(undefined);
   memberNames.mockReset().mockResolvedValue({ [ADA]: "Ada", [BOB]: "Bob" });
@@ -1197,6 +1200,262 @@ describe("answering a message", () => {
     expect(
       screen.queryByRole("button", { name: "Stop replying" }),
     ).not.toBeInTheDocument();
+  });
+});
+
+describe("correcting a message", () => {
+  /** Open the composer on this account's own message. */
+  async function editing(body = "teh typo") {
+    await pane();
+    await arrive(timeline([said("$1", BOB, body)]));
+    await userEvent.click(screen.getByRole("button", { name: "Edit" }));
+  }
+
+  /** Press Reply on the first message drawn, which the two tests below own. */
+  async function replyToTheirs() {
+    const [theirs] = screen.getAllByRole("button", { name: "Reply" });
+    await userEvent.click(theirs as HTMLElement);
+  }
+
+  it("offers the control on this account's own message and not on another's", async () => {
+    await pane();
+    await arrive(
+      timeline([said("$1", BOB, "teh typo"), said("$2", ADA, "what they said")]),
+    );
+
+    expect(screen.getAllByRole("button", { name: "Edit" })).toHaveLength(1);
+  });
+
+  it("puts what the message says in the box", async () => {
+    // Opened on the sentence rather than empty, because almost every edit is
+    // a word in a sentence somebody otherwise meant.
+    await editing();
+
+    expect(screen.getByRole("textbox")).toHaveValue("teh typo");
+  });
+
+  it("says above the box that this is an edit rather than a message", async () => {
+    await editing();
+
+    const bar = screen.getByRole("button", { name: "Stop editing" }).parentElement;
+    expect(bar).toHaveTextContent(/editing/i);
+    expect(bar).toHaveTextContent("teh typo");
+  });
+
+  it("sends an edit rather than an ordinary message", async () => {
+    await editing();
+
+    await userEvent.clear(screen.getByRole("textbox"));
+    await userEvent.type(screen.getByRole("textbox"), "the typo");
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    expect(timelineEdit).toHaveBeenCalledWith(GENERAL, "$1", "the typo");
+    expect(timelineSend).not.toHaveBeenCalled();
+  });
+
+  it("goes back to an ordinary message once the edit has gone", async () => {
+    await editing();
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    await userEvent.type(screen.getByRole("textbox"), "and another thing");
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    expect(timelineSend).toHaveBeenCalledWith(GENERAL, "and another thing");
+  });
+
+  it("keeps the draft and the mode when the send fails", async () => {
+    timelineEdit.mockRejectedValue({ message: "no", detail: "no" });
+    await editing();
+
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    expect(screen.getByRole("textbox")).toHaveValue("teh typo");
+    expect(screen.getByRole("button", { name: "Stop editing" })).toBeVisible();
+  });
+
+  it("empties the box when the edit is abandoned", async () => {
+    // The text in there is the old message, not something somebody typed, so
+    // leaving it would put a copy of a sentence already in the room into the
+    // next ordinary send.
+    await editing();
+
+    await userEvent.click(screen.getByRole("button", { name: "Stop editing" }));
+
+    expect(screen.getByRole("textbox")).toHaveValue("");
+  });
+
+  it("stops editing on Escape in the box", async () => {
+    await editing();
+
+    await userEvent.type(screen.getByRole("textbox"), "{Escape}");
+
+    expect(
+      screen.queryByRole("button", { name: "Stop editing" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("gives up the edit when an attachment is staged", async () => {
+    // An edit replaces the text of a message that already exists. It cannot
+    // carry a file, so a composer holding both has two things to do and one
+    // Send, and the attachment is what would go.
+    pickAttachment.mockResolvedValue({
+      path: "/home/ada/holiday.png",
+      name: "holiday.png",
+      size: 2048,
+    });
+    await editing();
+
+    await userEvent.click(screen.getByRole("button", { name: "Attach a file" }));
+    await screen.findByText("holiday.png");
+
+    expect(
+      screen.queryByRole("button", { name: "Stop editing" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("textbox")).toHaveValue("");
+  });
+
+  it("gives up a staged attachment when an edit is started", async () => {
+    pickAttachment.mockResolvedValue({
+      path: "/home/ada/holiday.png",
+      name: "holiday.png",
+      size: 2048,
+    });
+    await pane();
+    await arrive(timeline([said("$1", BOB, "teh typo")]));
+    await userEvent.click(screen.getByRole("button", { name: "Attach a file" }));
+    await screen.findByText("holiday.png");
+
+    await userEvent.click(screen.getByRole("button", { name: "Edit" }));
+
+    expect(screen.queryByText("holiday.png")).not.toBeInTheDocument();
+    expect(screen.getByRole("textbox")).toHaveValue("teh typo");
+  });
+
+  it("sends the edit and not an attachment after a file was chosen and dropped", async () => {
+    // The shape the exclusivity exists to stop: `send` reaches the staged
+    // branch first, so a composer holding both would post a new picture
+    // captioned with the old message and quietly abandon the correction.
+    pickAttachment.mockResolvedValue({
+      path: "/home/ada/holiday.png",
+      name: "holiday.png",
+      size: 2048,
+    });
+    await pane();
+    await arrive(timeline([said("$1", BOB, "teh typo")]));
+    await userEvent.click(screen.getByRole("button", { name: "Attach a file" }));
+    await screen.findByText("holiday.png");
+    await userEvent.click(screen.getByRole("button", { name: "Edit" }));
+
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    expect(timelineEdit).toHaveBeenCalledWith(GENERAL, "$1", "teh typo");
+    expect(attachFile).not.toHaveBeenCalled();
+  });
+
+  it("stops answering when an edit is started", async () => {
+    // The two are one box with one Send. Both set at once is a composer with
+    // two things to do and no way to say which.
+    await pane();
+    await arrive(
+      timeline([said("$1", ADA, "the original"), said("$2", BOB, "teh typo")]),
+    );
+    // The one on the message that is not ours, of the two on screen.
+    await replyToTheirs();
+
+    await userEvent.click(screen.getByRole("button", { name: "Edit" }));
+
+    expect(
+      screen.queryByRole("button", { name: "Stop replying" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("stops editing when a reply is started", async () => {
+    await pane();
+    await arrive(
+      timeline([said("$1", ADA, "the original"), said("$2", BOB, "teh typo")]),
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Edit" }));
+
+    await replyToTheirs();
+
+    expect(
+      screen.queryByRole("button", { name: "Stop editing" }),
+    ).not.toBeInTheDocument();
+  });
+});
+
+describe("the up arrow", () => {
+  it("opens the last message this account sent", async () => {
+    // The binding everybody reaches for without thinking.
+    await pane();
+    await arrive(
+      timeline([
+        said("$1", BOB, "an older one of mine"),
+        said("$2", BOB, "teh typo"),
+        said("$3", ADA, "and then they said this"),
+      ]),
+    );
+
+    await userEvent.type(screen.getByRole("textbox"), "{ArrowUp}");
+
+    expect(screen.getByRole("textbox")).toHaveValue("teh typo");
+  });
+
+  it("does nothing while there is a draft in the box", async () => {
+    // Otherwise it eats cursor movement in a paragraph somebody is writing.
+    await pane();
+    await arrive(timeline([said("$1", BOB, "teh typo")]));
+    await userEvent.type(screen.getByRole("textbox"), "half a sentence");
+
+    await userEvent.type(screen.getByRole("textbox"), "{ArrowUp}");
+
+    expect(screen.getByRole("textbox")).toHaveValue("half a sentence");
+    expect(
+      screen.queryByRole("button", { name: "Stop editing" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("does nothing in a room this account has not spoken in", async () => {
+    await pane();
+    await arrive(timeline([said("$1", ADA, "what they said")]));
+
+    await userEvent.type(screen.getByRole("textbox"), "{ArrowUp}");
+
+    expect(screen.getByRole("textbox")).toHaveValue("");
+  });
+
+  it("passes over an attachment to reach a message it can correct", async () => {
+    // An edit replaces text, and there is no caption editing surface, so a
+    // picture is not the thing the last press meant.
+    await pane();
+    await arrive(
+      timeline([
+        said("$1", BOB, "teh typo"),
+        { ...picture("$2"), sender: BOB },
+      ]),
+    );
+
+    await userEvent.type(screen.getByRole("textbox"), "{ArrowUp}");
+
+    expect(screen.getByRole("textbox")).toHaveValue("teh typo");
+  });
+
+  it("does nothing while an attachment is staged", async () => {
+    // The box is the caption for what is about to be sent, and swapping it
+    // for an old message would send that sentence as the caption.
+    pickAttachment.mockResolvedValue({
+      path: "/home/ada/holiday.png",
+      name: "holiday.png",
+      size: 2048,
+    });
+    await pane();
+    await arrive(timeline([said("$1", BOB, "teh typo")]));
+    await userEvent.click(screen.getByRole("button", { name: "Attach a file" }));
+    await screen.findByText("holiday.png");
+
+    await userEvent.type(screen.getByRole("textbox"), "{ArrowUp}");
+
+    expect(screen.getByRole("textbox")).toHaveValue("");
   });
 });
 

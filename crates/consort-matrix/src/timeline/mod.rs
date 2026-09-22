@@ -46,6 +46,7 @@
 mod answering;
 mod around;
 pub mod dto;
+mod edits;
 pub(crate) mod facts;
 mod history;
 mod media;
@@ -55,6 +56,7 @@ mod sending;
 mod thread;
 
 pub use dto::{Media, Message, MessageKind, Reaction, Thread, ThreadSummary, Timeline, Typing};
+pub use edits::Edits;
 pub use history::History;
 pub use media::{Attachment, MAX_BYTES, bytes, media};
 pub use permalink::permalink;
@@ -67,12 +69,13 @@ use std::collections::{HashMap, HashSet};
 use futures_util::StreamExt;
 use matrix_sdk::deserialized_responses::TimelineEvent;
 use matrix_sdk::room::MessagesOptions;
+use matrix_sdk::room::edit::{EditError, EditedContent};
 use matrix_sdk::ruma::api::Direction;
 use matrix_sdk::ruma::events::reaction::ReactionEventContent;
 use matrix_sdk::ruma::events::relation::Annotation;
 use matrix_sdk::ruma::events::relation::Thread as ThreadRelation;
 use matrix_sdk::ruma::events::room::message::{
-    AddMentions, ForwardThread, Relation, ReplyMetadata, RoomMessageEventContent,
+    AddMentions, ForwardThread, Relation, ReplyMetadata, ReplyWithinThread, RoomMessageEventContent,
 };
 use matrix_sdk::ruma::events::{AnySyncEphemeralRoomEvent, AnySyncTimelineEvent};
 use matrix_sdk::ruma::serde::Raw;
@@ -453,6 +456,15 @@ struct Loaded {
     /// for a message that may not be loaded, may be loaded later by a page, or
     /// may never be. Merged onto the messages when a timeline is published.
     reactions: Reactions,
+    /// The corrections people have made, for every message replaced in
+    /// anything this watcher has seen.
+    ///
+    /// Beside the history for the reason the reactions are, and for one more:
+    /// an edit is a different event from the message it corrects, so writing
+    /// the new text into the history would be undone the moment a room key
+    /// re-read the original. Merged onto the messages when a timeline is
+    /// published.
+    edits: Edits,
     /// The events this session could not read, by event ID.
     ///
     /// Held as the JSON they arrived as, which is what `decrypt_event` takes,
@@ -529,6 +541,7 @@ impl Loaded {
             open: None,
             history: History::new(),
             reactions: Reactions::new(),
+            edits: Edits::new(),
             waiting: HashMap::new(),
             answered: HashMap::new(),
             from: None,
@@ -797,11 +810,13 @@ impl Loaded {
         })
     }
 
-    /// Take note of the reactions and the redactions in one batch.
+    /// Take note of everything in one batch that is not a message.
     ///
-    /// Reports whether anything drawn changed. Separate from [`Self::read`]
-    /// because these are not messages and never become any: an annotation is
-    /// something *on* a message, and a redaction can remove either.
+    /// The reactions, the corrections and the redactions. Reports whether
+    /// anything drawn changed. Separate from [`Self::read`] because none of
+    /// these is a message and none of them ever becomes one: a reaction and an
+    /// edit are both something *about* a message, and a redaction can remove
+    /// any of the three.
     fn annotations(&mut self, events: &[TimelineEvent]) -> bool {
         let mut changed = false;
         for event in events {
@@ -811,11 +826,28 @@ impl Loaded {
                     .added(&one.event_id, &one.target, &one.key, &one.sender);
                 continue;
             }
+            if let Some(one) = facts::replacement(event) {
+                // Taken whoever sent it. Whether they wrote the message being
+                // replaced is a comparison against the original, which is
+                // regularly not loaded here, and `Edits::latest_on` is where
+                // it can be made.
+                changed |= self.edits.added(
+                    &one.event_id,
+                    &one.target,
+                    &one.sender,
+                    one.at,
+                    one.body,
+                    one.html,
+                );
+                continue;
+            }
             if let Some(gone) = facts::redaction(event) {
                 // Whichever it was. A redacted message stops being a message
                 // and is dropped from the history; a redacted annotation is
-                // somebody taking a reaction back.
+                // somebody taking a reaction back, and a redacted edit is
+                // somebody taking a correction back.
                 changed |= self.reactions.redacted(&gone);
+                changed |= self.edits.redacted(&gone);
                 changed |= self.history.forget(&gone);
             }
         }
@@ -996,13 +1028,15 @@ impl Loaded {
         changed
     }
 
-    /// The messages, each carrying what people have reacted to it with.
+    /// The messages, each carrying what people have reacted to it with and
+    /// whatever its author has since corrected it to say.
     ///
-    /// Merged here rather than held on the message, because the two change for
-    /// different reasons: a message is replaced when a room key opens it, and
-    /// what is on it changes when somebody presses a pill. Keeping the
-    /// reactions on the message would mean every re-read had to carry them
-    /// forward by hand, and the one that forgot would silently clear them.
+    /// Merged here rather than held on the message, because these change for
+    /// different reasons than the message does: a message is replaced when a
+    /// room key opens it, what is on it changes when somebody presses a pill,
+    /// and what it says changes when its author corrects it. Keeping any of
+    /// them on the message would mean every re-read had to carry them forward
+    /// by hand, and the one that forgot would silently drop them.
     fn drawn(&self, messages: &[Message]) -> Vec<Message> {
         let me = self.me.as_deref();
         messages
@@ -1010,14 +1044,41 @@ impl Loaded {
             .map(|message| {
                 let reactions = self.reactions.on(&message.id, me);
                 if reactions.is_empty() {
-                    return message.clone();
+                    return self.corrected(message);
                 }
                 Message {
                     reactions,
-                    ..message.clone()
+                    ..self.corrected(message)
                 }
             })
             .collect()
+    }
+
+    /// One message as its author has since corrected it, if they have.
+    ///
+    /// The sender check is [`Edits::latest_on`]'s, made here rather than when
+    /// the edit arrived because here is the first place the original is in
+    /// hand to compare against.
+    fn corrected(&self, message: &Message) -> Message {
+        let Some(edit) = self.edits.latest_on(&message.id, &message.sender) else {
+            return message.clone();
+        };
+
+        Message {
+            // Both, always, out of the edit alone. Merging field by field is
+            // how a message edited down to plain text keeps the formatting it
+            // had: the new sentence would come from `body` and the old one
+            // from `html`, and `FormattedBody` draws the second.
+            body: edit.body.clone(),
+            html: edit.html.clone(),
+            edited: true,
+            // `at` is deliberately untouched, and it is the line a later
+            // reader will be tempted to fix. A message keeps the moment it was
+            // said: the date separators are keyed off it, so a message from
+            // last Tuesday corrected this morning would otherwise jump to
+            // today and take its separator with it.
+            ..message.clone()
+        }
     }
 
     /// The messages these replies name that are not among them.
@@ -1030,6 +1091,12 @@ impl Loaded {
     /// Reactions are deliberately not merged onto these. The row above a reply
     /// draws a name and a line of what was said; pills belong on the message
     /// itself, wherever it is drawn.
+    ///
+    /// Edits are, and the two are different for a reason rather than by
+    /// oversight. A pill missing from a quoted row is something not drawn; the
+    /// pre-edit text in a quoted row is a wrong sentence attributed to
+    /// somebody by name, which is the whole defect this fold exists to fix,
+    /// one layer down.
     fn answers(&self, messages: &[Message]) -> Vec<Message> {
         let held: HashSet<&str> = messages.iter().map(|message| message.id.as_str()).collect();
         let mut answers: Vec<Message> = Vec::new();
@@ -1042,7 +1109,7 @@ impl Loaded {
                 continue;
             }
             if let Some(Some(answered)) = self.answered.get(id) {
-                answers.push(answered.clone());
+                answers.push(self.corrected(answered));
             }
         }
         answers
@@ -1186,26 +1253,107 @@ pub async fn send_reply(
     Ok(())
 }
 
-/// Say something in a thread.
+/// Correct a message this account sent.
 ///
-/// `latest_id` is the last thing said in the thread as far as the caller
-/// knows, and it goes on the reply fallback rather than on the relation
-/// itself. A client that understands threads reads `event_id` and puts this in
-/// the right conversation; one that does not sees an ordinary reply pointing
-/// at whatever was being answered, which is the whole reason the fallback is
-/// there. Stale is harmless: nothing about which thread this belongs to
-/// depends on it.
+/// A wrapper rather than an implementation. `Room::make_edit_event` builds the
+/// whole event: it refuses an edit of somebody else's message, carries the
+/// original's `m.mentions` forward so that correcting a typo does not silently
+/// unmention whoever was named, and writes both `m.new_content` and the `* `
+/// fallback body a client with no idea about edits draws.
+///
+/// It also reads the target event first, which is a round trip. An edit of a
+/// message old enough to have fallen out of the event cache can therefore fail
+/// on the fetch, before anything has been sent.
+///
+/// Nothing is returned and nothing is echoed, on the same terms as every other
+/// send here: the correction appears when the sync brings it back.
+pub async fn send_edit(client: &Client, room_id: &str, event_id: &str, body: &str) -> Result<()> {
+    // Before the fetch, so an empty box costs no round trip. Emptying the
+    // composer is also not how a message is deleted, and sending this would
+    // leave a blank line where a sentence was.
+    let content = written(body)?;
+    let target = event_id_of(event_id)?;
+    let room = room_of(client, room_id)?;
+
+    // Boxed, and it is load-bearing rather than tidy. `make_edit_event` reads
+    // the target event through the SDK's event cache first, and inlining that
+    // future makes this one deep enough that rustc gives up computing the
+    // layout of anything holding it. Under `-C instrument-coverage` it gives
+    // up sooner, so the failure shows up in CI's coverage job rather than in
+    // an ordinary build. One box here beats one at every call site.
+    let edit = Box::pin(room.make_edit_event(&target, EditedContent::RoomMessage(content.into())))
+        .await
+        .map_err(|error| match error {
+            // Its own variant, because it is the one failure here with
+            // something to say to a person. Everything else is a homeserver
+            // that would not answer, which `Error::Sdk` already has words for.
+            EditError::NotAuthor => Error::NotYourMessage {
+                event_id: event_id.to_owned(),
+            },
+            other => {
+                tracing::warn!(%other, %room_id, %event_id, "could not build the edit");
+                Error::NoSuchEvent {
+                    event_id: event_id.to_owned(),
+                }
+            }
+        })?;
+
+    room.send(edit).await?;
+    Ok(())
+}
+
+/// Say something in a thread, answering one reply in it or none.
+///
+/// `in_reply_to` is what the `m.in_reply_to` points at, and `answering` is who
+/// wrote it. The two cases differ only in that pair and in one boolean, and
+/// the boolean is the whole of what tells them apart on the way back in.
+///
+/// With no `answering`, this is just another reply and `in_reply_to` is the
+/// last thing said in the thread as far as the caller knows. It is falling
+/// back: a client that understands threads reads `event_id` and puts the
+/// message in the right conversation, one that does not sees an ordinary reply
+/// pointing at whatever was being answered, and `facts::answering` ignores it
+/// so that a panel does not draw a quoted row on every line in it. Stale is
+/// harmless, because nothing about which thread this belongs to depends on it.
+///
+/// With one, this answers that message and says so. `in_reply_to` is the
+/// message being answered rather than the newest, the fallback flag comes off,
+/// and the author is mentioned, on the same terms and for the same reason as a
+/// reply in the room: an answer nobody is notified of is a line in a panel
+/// that is not open.
 pub async fn send_in_thread(
     client: &Client,
     room_id: &str,
     root_id: &str,
-    latest_id: &str,
+    in_reply_to: &str,
+    answering: Option<&str>,
     body: &str,
 ) -> Result<()> {
     let mut content = written(body)?;
     let root = event_id_of(root_id)?;
-    let latest = event_id_of(latest_id)?;
-    content.relates_to = Some(Relation::Thread(ThreadRelation::plain(root, latest)));
+    let answered = event_id_of(in_reply_to)?;
+
+    let content = match answering {
+        None => {
+            content.relates_to = Some(Relation::Thread(ThreadRelation::plain(root, answered)));
+            content
+        }
+        Some(sender) => {
+            let author = UserId::parse(sender).map_err(|_| Error::NoSuchUser {
+                user_id: sender.to_owned(),
+            })?;
+            // Which thread, handed in rather than read off the message being
+            // answered. `make_for_thread` takes the root from this and would
+            // otherwise start a new thread rooted at the answered message,
+            // which is a second conversation where somebody meant a sentence.
+            let thread = ThreadRelation::without_fallback(root);
+            content.make_for_thread(
+                ReplyMetadata::new(&answered, &author, Some(&thread)),
+                ReplyWithinThread::Yes,
+                AddMentions::Yes,
+            )
+        }
+    };
 
     room_of(client, room_id)?.send(content).await?;
     Ok(())

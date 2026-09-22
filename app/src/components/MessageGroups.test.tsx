@@ -88,6 +88,7 @@ function drawWithActions(
   messages: Message[],
   props: {
     onReply?: (message: Message) => void;
+    onEdit?: (message: Message) => void;
     onCopyLink?: (eventId: string) => void;
     copiedId?: string | null;
   },
@@ -1093,5 +1094,91 @@ describe("adding another reaction", () => {
       "aria-pressed",
       "true",
     );
+  });
+});
+
+describe("a message that was edited", () => {
+  it("says so", () => {
+    // A correction drawn as though it were what somebody first wrote is a
+    // quiet way of putting words in their mouth.
+    draw([said("$1", ADA, "corrected", NOON, { edited: true })]);
+
+    expect(screen.getByText("(edited)")).toBeInTheDocument();
+  });
+
+  it("says nothing on a message nobody edited", () => {
+    draw([said("$1", ADA, "as it was sent")]);
+
+    expect(screen.queryByText("(edited)")).not.toBeInTheDocument();
+  });
+
+  it("puts the mark inside the words rather than on a line of its own", () => {
+    // Inline, because a row of its own would space the conversation out by
+    // the height of a line on every message anybody has ever corrected.
+    draw([said("$1", ADA, "corrected", NOON, { edited: true })]);
+
+    const body = screen.getByText("corrected").closest(".timeline__body");
+    expect(body).toContainElement(screen.getByText("(edited)"));
+  });
+});
+
+describe("correcting a message", () => {
+  it("offers the control on this account's own message", () => {
+    drawWithActions([said("$1", BOB, "teh typo")], { onEdit: vi.fn() });
+
+    expect(screen.getByRole("button", { name: "Edit" })).toBeInTheDocument();
+  });
+
+  it("offers nothing on somebody else's", () => {
+    // The second lock is in Rust, which reads who sent the target before it
+    // will build anything. This is the first: no control to press.
+    drawWithActions([said("$1", ADA, "what they said")], { onEdit: vi.fn() });
+
+    expect(screen.queryByRole("button", { name: "Edit" })).not.toBeInTheDocument();
+  });
+
+  it("offers nothing on an attachment of this account's own", () => {
+    // An edit carries replacement text, and replacing a picture with a
+    // sentence is what every client that folds one would then draw. There is
+    // no caption editing surface, so there is nothing to offer here yet.
+    drawWithActions(
+      [
+        said("$1", BOB, "what it is a picture of", NOON, {
+          kind: "image",
+          media: { source: "{}", name: "shot.png" },
+        }),
+      ],
+      { onEdit: vi.fn() },
+    );
+
+    expect(screen.queryByRole("button", { name: "Edit" })).not.toBeInTheDocument();
+  });
+
+  it("offers nothing on a message this session could not read", () => {
+    drawWithActions(
+      [said("$1", BOB, "Waiting for the key", NOON, { kind: "undecryptable" })],
+      { onEdit: vi.fn() },
+    );
+
+    expect(screen.queryByRole("button", { name: "Edit" })).not.toBeInTheDocument();
+  });
+
+  it("offers nothing where there is nothing to pass it to", () => {
+    // The thread panel, which has no composer mode for an edit.
+    drawWithActions([said("$1", BOB, "teh typo")], {});
+
+    expect(screen.queryByRole("button", { name: "Edit" })).not.toBeInTheDocument();
+  });
+
+  it("hands the whole message to whoever is going to correct it", async () => {
+    // Not the ID. The composer opens on what the message currently says, and
+    // an ID alone cannot fill the box.
+    const onEdit = vi.fn();
+    const message = said("$1", BOB, "teh typo");
+    drawWithActions([message], { onEdit });
+
+    await userEvent.click(screen.getByRole("button", { name: "Edit" }));
+
+    expect(onEdit).toHaveBeenCalledWith(message);
   });
 });
