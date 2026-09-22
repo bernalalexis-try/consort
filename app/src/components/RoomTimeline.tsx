@@ -555,6 +555,12 @@ export function RoomTimeline({
       [
         ...new Set([
           ...timeline.messages.map((message) => message.sender),
+          // The actors and subjects of membership changes too, which are
+          // drawn by name on the same terms as a message's byline.
+          ...(timeline.system ?? []).flatMap((system) => [
+            system.actor,
+            system.subject,
+          ]),
           // The typists too. Somebody can be typing without having said
           // anything yet, and their user ID is not a name to put in front of
           // "is typing".
@@ -563,7 +569,7 @@ export function RoomTimeline({
       ]
         .sort()
         .join(" "),
-    [timeline.messages, typists],
+    [timeline.messages, timeline.system, typists],
   );
 
   useEffect(() => {
@@ -1085,6 +1091,7 @@ export function RoomTimeline({
   }
 
   const messages = mine ? timeline.messages : [];
+  const systemMessages = mine ? (timeline.system ?? []) : [];
   const groups = useMemo(() => group(messages), [messages]);
   // Which messages open a day, for the separators drawn above them.
   const newDay = useMemo(() => firstOfEachDay(messages), [messages]);
@@ -1198,14 +1205,16 @@ export function RoomTimeline({
           <p className="timeline__paging">Loading earlier messages...</p>
         )}
 
-        {mine && !timeline.loading && groups.length === 0 && (
-          <p className="timeline__empty">
-            Nothing has been said here yet.
-          </p>
-        )}
+        {mine && !timeline.loading && groups.length === 0 &&
+          systemMessages.length === 0 && (
+            <p className="timeline__empty">
+              Nothing has been said here yet.
+            </p>
+          )}
 
         <MessageGroups
           groups={groups}
+          system={systemMessages}
           names={names}
           roomId={channel.id}
           selfId={selfId}
