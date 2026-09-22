@@ -4,6 +4,23 @@ What changed in each release, taken from the commit messages. Consort is
 pre-1.0 and its versions say so: anything can move between minor versions,
 and the patch number is where most of the work has landed so far.
 
+## 0.7.0 (2026-09-22)
+
+### Added
+
+- **shell:** Quit on Ctrl+Q
+- **channels:** Count what is unread, not just mark it
+- **timeline:** Put a time on every message, not just the first
+- **timeline:** Separate the days, and shrink the gutter time
+- **timeline:** Edit a message you sent
+- **threads:** Put Reply and Edit on messages in a thread
+
+### Fixed
+
+- **ci:** Build the Arch package from the tag's own recipe
+- **media:** Address an attachment the way Windows serves it
+- **timeline:** Show an edit somebody made, instead of the old text
+
 ## 0.6.0 (2026-09-15)
 
 ### Added
