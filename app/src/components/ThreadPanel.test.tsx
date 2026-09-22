@@ -169,7 +169,10 @@ describe("ThreadPanel", () => {
   it("draws the message the thread hangs from and its replies", async () => {
     await opened();
 
-    expect(screen.getByText("what shall we call it")).toBeVisible();
+    // Twice over, since the head is named after the root as well as drawing
+    // it below the rule. The second is the message itself.
+    const [, root] = screen.getAllByText("what shall we call it");
+    expect(root).toBeVisible();
     expect(screen.getByText("Consort")).toBeVisible();
   });
 
@@ -586,6 +589,59 @@ describe("ThreadPanel", () => {
     // The count, not the composer's own Reply, which is how anything gets
     // said in here.
     expect(screen.queryByRole("button", { name: /\d+ repl/i })).toBeNull();
+  });
+});
+
+describe("what the panel is called", () => {
+  it("is named after the message the thread hangs from", async () => {
+    // "Thread" is what this said, which is true of every thread and so says
+    // nothing about the one somebody is reading.
+    await opened();
+
+    expect(
+      screen.getByRole("heading", { name: "what shall we call it" }),
+    ).toBeVisible();
+  });
+
+  it("says what was written rather than how it was written", async () => {
+    await opened({
+      ...OPEN,
+      root: {
+        ...said("$root:example.org", "**ship it** on [friday](https://example.org)"),
+        html: '<p><strong>ship it</strong> on <a href="https://example.org">friday</a></p>',
+      },
+    });
+
+    expect(screen.getByRole("heading", { name: "ship it on friday" })).toBeVisible();
+  });
+
+  it("goes back to the plain word when the root could not be fetched", async () => {
+    // A redaction and a missing key both look like this, and a blank head
+    // above a column of replies reads as a panel that failed to load.
+    const { root: _root, ...rootless } = OPEN;
+    await opened(rootless);
+
+    expect(screen.getByRole("heading", { name: "Thread" })).toBeVisible();
+  });
+
+  it("reads out a message that is nothing but a custom emoji", async () => {
+    // There are no words in an `img`, and the shortcode the sender typed is
+    // what somebody would say out loud.
+    await opened({
+      ...OPEN,
+      root: {
+        ...said("$root:example.org", ":shipit:"),
+        html: '<img data-mx-emoticon src="mxc://example.org/ship" alt=":shipit:">',
+      },
+    });
+
+    expect(screen.getByRole("heading", { name: ":shipit:" })).toBeVisible();
+  });
+
+  it("names an attachment nobody captioned", async () => {
+    await opened({ ...OPEN, root: picture("$root:example.org") });
+
+    expect(screen.getByRole("heading", { name: "screenshot.png" })).toBeVisible();
   });
 });
 
