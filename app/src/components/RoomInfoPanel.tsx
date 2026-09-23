@@ -31,6 +31,32 @@ export function RoomInfoPanel({
   const [copied, setCopied] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
 
+  /*
+    Escape shuts the panel, which is what it does to everything else here that
+    can be dismissed.
+
+    On `window` for the reason the thread panel's is: the picture viewer, the
+    settings dialog, the reaction picker and a person's card all catch the key
+    at the document and stop it there, one step nearer the press. Listening
+    further out is what leaves them the press while any of them is open over
+    this, and what leaves the composer the press while it has a reply or an
+    attachment to clear. One press, one thing.
+
+    Nothing guards on the panel being open because the shell only mounts this
+    while it is, so the listener goes with it.
+  */
+  useEffect(() => {
+    function shut(event: KeyboardEvent) {
+      if (event.key !== "Escape") return;
+      onClose();
+    }
+
+    window.addEventListener("keydown", shut);
+    return () => {
+      window.removeEventListener("keydown", shut);
+    };
+  }, [onClose]);
+
   // The tick on the copy control, put back after a moment. The same length the
   // one on a message holds for, because two ticks on one screen that fade at
   // different speeds is a difference nobody could see the reason for.

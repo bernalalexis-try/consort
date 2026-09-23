@@ -146,4 +146,28 @@ describe("RoomInfoPanel", () => {
 
     expect(onClose).toHaveBeenCalled();
   });
+
+  it("closes on Escape, the way everything else here is dismissed", async () => {
+    const onClose = vi.fn();
+    render(<RoomInfoPanel channel={channel()} onClose={onClose} />);
+
+    await userEvent.keyboard("{Escape}");
+
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it("stops answering the key once it is gone", async () => {
+    // A listener at the window outlives the panel if nothing takes it off,
+    // and the shell would then close a panel that is already closed on every
+    // later press.
+    const onClose = vi.fn();
+    const { unmount } = render(
+      <RoomInfoPanel channel={channel()} onClose={onClose} />,
+    );
+
+    unmount();
+    await userEvent.keyboard("{Escape}");
+
+    expect(onClose).not.toHaveBeenCalled();
+  });
 });

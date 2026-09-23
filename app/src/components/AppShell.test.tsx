@@ -497,6 +497,29 @@ describe("AppShell", () => {
       expect(screen.queryByRole("heading", { name: "Room info" })).toBeNull();
     });
 
+    it("puts them away on Escape", async () => {
+      await userEvent.click(await heading());
+
+      await userEvent.keyboard("{Escape}");
+
+      expect(screen.queryByRole("heading", { name: "Room info" })).toBeNull();
+    });
+
+    it("leaves them open when a dialog over them takes the Escape", async () => {
+      // One press, one thing. The dialog is on top, so it is what closes, and
+      // details that went with it would be a second thing nobody asked for.
+      await userEvent.click(await heading());
+      await userEvent.click(
+        screen.getByRole("button", { name: /user settings/i }),
+      );
+      expect(await screen.findByRole("dialog")).toBeVisible();
+
+      await userEvent.keyboard("{Escape}");
+
+      expect(screen.queryByRole("dialog")).toBeNull();
+      expect(screen.getByRole("heading", { name: "Room info" })).toBeVisible();
+    });
+
     it("draws nothing before a room is picked", async () => {
       // There is no heading to press in the empty pane, and nothing for a
       // panel about a room to describe.
