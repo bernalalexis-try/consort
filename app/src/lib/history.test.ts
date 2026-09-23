@@ -81,23 +81,26 @@ describe("useHistory", () => {
     expect(result.current[0]).toEqual(GENERAL);
   });
 
-  it("comes back when the mouse's back button is pressed", async () => {
-    // The button the whole thing exists for. Whether it arrives as an event
-    // to handle or as a traversal the engine has already performed is the
-    // engine's business; either way it ends up on the entry behind.
+  it("comes back one place when the mouse's back button is pressed", async () => {
+    // The button the whole thing exists for, and two places behind it rather
+    // than one, so that a press worth two entries is a failure here and not
+    // an answer that happens to be right.
     const { result } = renderHook(() => useHistory(NOWHERE));
 
     act(() => result.current[1](GENERAL));
+    act(() => result.current[1](TECH));
     await pressBack();
 
-    expect(result.current[0]).toEqual(NOWHERE);
+    expect(result.current[0]).toEqual(GENERAL);
   });
 
-  it("goes forward when the mouse's forward button is pressed", async () => {
+  it("goes forward one place when the mouse's forward button is pressed", async () => {
     const { result } = renderHook(() => useHistory(NOWHERE));
 
     act(() => result.current[1](GENERAL));
-    await pressBack();
+    act(() => result.current[1](TECH));
+    await goBack();
+    await goBack();
     await pressForward();
 
     expect(result.current[0]).toEqual(GENERAL);

@@ -740,9 +740,10 @@ describe("AppShell", () => {
       );
     });
 
-    it("comes back when the mouse's back button is pressed", async () => {
+    it("comes back one room when the mouse's back button is pressed", async () => {
       // The whole of issue 60, end to end: the button on the side of a mouse
-      // and the room it lands on.
+      // and the room it lands on. A press that moves twice lands on the empty
+      // pane instead, which is what this looked like when it was wrong.
       shell({ rooms: twoRooms });
       await userEvent.click(screen.getByRole("button", { name: /general/ }));
       await userEvent.click(screen.getByRole("button", { name: /tech/ }));

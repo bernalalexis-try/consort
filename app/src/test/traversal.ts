@@ -35,11 +35,37 @@ export async function goForward(): Promise<void> {
 const BACK = 3;
 const FORWARD = 4;
 
+/**
+ * A press of one of those, the way the webview host delivers it.
+ *
+ * wry inhibits buttons 8 and 9 at the GTK level and dispatches a `mousedown`
+ * and a `mouseup` of its own in their place, then traverses on the `mouseup`
+ * unless the page cancelled that event. Modelled here rather than shortened
+ * to a bare dispatch, because a harness that only fires the event cannot fail
+ * on a page that traverses as well, and two moves per press was the fault.
+ *
+ * The wait between press and release is the length of a press. Without it
+ * both moves resolve against the same entry and land one step together, which
+ * is why a quick synthetic click hid this and a finger on the button did not.
+ */
 async function press(button: number): Promise<void> {
   act(() => {
     window.dispatchEvent(
       new MouseEvent("mousedown", { button, bubbles: true, cancelable: true }),
     );
+  });
+  await traversed();
+
+  const release = new MouseEvent("mouseup", {
+    button,
+    bubbles: true,
+    cancelable: true,
+  });
+  act(() => {
+    window.dispatchEvent(release);
+    if (release.defaultPrevented) return;
+    if (button === BACK) window.history.back();
+    if (button === FORWARD) window.history.forward();
   });
   await traversed();
 }

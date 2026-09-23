@@ -29,18 +29,6 @@ export interface Where {
  */
 const WHERE = "consortWhere";
 
-/**
- * The extra buttons on a mouse, as the DOM numbers them.
- *
- * Acted on here rather than left to the webview, because whether an engine
- * treats these as a navigation of its own or simply hands the page an event
- * and waits is the engine's business, and not the same everywhere. Cancelling
- * the default and traversing ourselves lands one entry back under either,
- * which is what somebody pressing the button meant by it.
- */
-const BACK = 3;
-const FORWARD = 4;
-
 function samePlace(one: Where, other: Where): boolean {
   return one.spaceId === other.spaceId && one.channelId === other.channelId;
 }
@@ -76,18 +64,15 @@ export function useHistory(initial: Where): [Where, (next: Where) => void] {
     window.history.replaceState({ [WHERE]: at.current }, "");
   }, []);
 
-  useEffect(() => {
-    function press(event: MouseEvent) {
-      if (event.button !== BACK && event.button !== FORWARD) return;
-      event.preventDefault();
-      if (event.button === BACK) window.history.back();
-      else window.history.forward();
-    }
-
-    window.addEventListener("mousedown", press);
-    return () => window.removeEventListener("mousedown", press);
-  }, []);
-
+  /*
+    A traversal, however it was asked for. The two extra buttons on a mouse
+    are deliberately not handled here: wry inhibits them at the GTK level and
+    dispatches a `mousedown` and a `mouseup` of its own for them, then
+    traverses on the `mouseup` unless the page cancelled that event. Doing it
+    here as well moved two entries per press, which somebody pressing Back saw
+    as the room behind flashing up and the empty pane settling in its place.
+    `wry/src/webkitgtk/synthetic_mouse_events.rs` is where that is written.
+  */
   useEffect(() => {
     function arrive(event: PopStateEvent) {
       const there = whereIn(event.state);
