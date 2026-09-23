@@ -17,6 +17,7 @@ import {
   threadOpen,
   threadSend,
   timelineCopyLink,
+  timelineDelete,
   timelineEdit,
   timelineReact,
   timelineUnreact,
@@ -439,6 +440,35 @@ export function ThreadPanel({
   }
 
   /**
+   * Delete a message this account sent.
+   *
+   * Reached once the question hanging off the control has been answered, so
+   * this sends the redaction rather than asking again.
+   *
+   * The composer is put back first when it was pointed at this message.
+   * Pressing Edit and then Delete is two presses apart, and what it would
+   * otherwise leave behind is a correction addressed to an event with nothing
+   * left to correct.
+   *
+   * Nothing is echoed, on the same terms as every other send: the words stay
+   * on screen until the sync brings the redaction back.
+   */
+  function remove(message: Message) {
+    // The same guard `copyLink` carries. A panel with no thread in it draws
+    // nothing, so nothing in it can be pressed, but the room ID is read off
+    // the thread and the compiler is right that it could be absent.
+    if (thread === null) return;
+    if (editingNow.current?.id === message.id) stopEditing();
+    // The box is left alone here, unlike the line above. What is in it while
+    // answering is something somebody typed rather than a copy of the old
+    // message, and it is still worth sending somewhere else.
+    if (answering?.id === message.id) setAnswering(null);
+    void timelineDelete(thread.roomId, message.id).catch((raw: unknown) => {
+      setProblem(asCommandError(raw).message);
+    });
+  }
+
+  /**
    * Put one reply's address on the clipboard.
    *
    * A reply in a thread has an address like anything else said in the room, and
@@ -546,6 +576,7 @@ export function ThreadPanel({
               onAbout={(person, at) => setOpened({ person, at })}
               onReply={reply}
               onEdit={edit}
+              onDelete={remove}
               onReact={react}
               onCopyLink={copyLink}
             />
@@ -573,6 +604,7 @@ export function ThreadPanel({
           onAbout={(person, at) => setOpened({ person, at })}
           onReply={reply}
           onEdit={edit}
+          onDelete={remove}
           onReact={react}
           onCopyLink={copyLink}
         />
