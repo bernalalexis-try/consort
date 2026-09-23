@@ -48,6 +48,7 @@ vi.mock("../lib/api", async (importOriginal) => ({
 }));
 
 import { AppShell } from "./AppShell";
+import { goBack, goForward, pressBack } from "../test/traversal";
 import { resetAvatarCache } from "../lib/avatars";
 import { HEARING } from "../lib/api";
 import type {
@@ -655,6 +656,132 @@ describe("AppShell", () => {
         within(complaint).getByRole("button", { name: "Dismiss" }),
       );
       expect(screen.queryByRole("alert")).toBeNull();
+    });
+  });
+
+  describe("back and forward", () => {
+    const GENERAL = "!general:example.org";
+    const TECH = "!tech:example.org";
+
+    const twoRooms: Rooms = {
+      spaces: [
+        {
+          id: "home",
+          name: "Home",
+          avatar: null,
+          channels: [textChannel(GENERAL, "general"), textChannel(TECH, "tech")],
+        },
+      ],
+    };
+
+    it("comes back to the room you were reading", async () => {
+      shell({ rooms: twoRooms });
+      await userEvent.click(screen.getByRole("button", { name: /general/ }));
+      await userEvent.click(screen.getByRole("button", { name: /tech/ }));
+
+      await goBack();
+
+      expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(
+        "#general",
+      );
+    });
+
+    it("goes forward again to the room you came back from", async () => {
+      shell({ rooms: twoRooms });
+      await userEvent.click(screen.getByRole("button", { name: /general/ }));
+      await userEvent.click(screen.getByRole("button", { name: /tech/ }));
+      await goBack();
+
+      await goForward();
+
+      expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(
+        "#tech",
+      );
+    });
+
+    it("comes back past the first room to the empty pane", async () => {
+      // Where the shell opens is somewhere it was, so the room picked first
+      // has something behind it rather than being the end of the line.
+      shell({ rooms: twoRooms });
+      await userEvent.click(screen.getByRole("button", { name: /general/ }));
+
+      await goBack();
+
+      expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(
+        "Nothing here yet",
+      );
+    });
+
+    it("comes back to the space you were in", async () => {
+      const twoSpaces: Rooms = {
+        spaces: [
+          {
+            id: "home",
+            name: "Home",
+            avatar: null,
+            channels: [textChannel(GENERAL, "general")],
+          },
+          {
+            id: "!hq:example.org",
+            name: "Kahu HQ",
+            avatar: null,
+            channels: [textChannel(TECH, "tech")],
+          },
+        ],
+      };
+      shell({ rooms: twoSpaces });
+      await userEvent.click(screen.getByRole("button", { name: /general/ }));
+      await userEvent.click(screen.getByRole("button", { name: "Kahu HQ" }));
+
+      await goBack();
+
+      expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(
+        "#general",
+      );
+    });
+
+    it("comes back one room when the mouse's back button is pressed", async () => {
+      // The whole of issue 60, end to end: the button on the side of a mouse
+      // and the room it lands on. A press that moves twice lands on the empty
+      // pane instead, which is what this looked like when it was wrong.
+      shell({ rooms: twoRooms });
+      await userEvent.click(screen.getByRole("button", { name: /general/ }));
+      await userEvent.click(screen.getByRole("button", { name: /tech/ }));
+
+      await pressBack();
+
+      expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(
+        "#general",
+      );
+    });
+
+    it("does not join a voice channel on the way back to it", async () => {
+      // Going back is looking at where you were, not clicking it again. A
+      // traversal that reconnected would drag somebody into a call they left.
+      const withVoice: Rooms = {
+        spaces: [
+          {
+            id: "home",
+            name: "Home",
+            avatar: null,
+            channels: [
+              textChannel(GENERAL, "general"),
+              voice("!lounge:example.org", "Lounge"),
+            ],
+          },
+        ],
+      };
+      const { onJoinVoice } = shell({ rooms: withVoice });
+      await userEvent.click(screen.getByRole("button", { name: "Lounge" }));
+      await userEvent.click(screen.getByRole("button", { name: /general/ }));
+      onJoinVoice.mockClear();
+
+      await goBack();
+
+      expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(
+        "Lounge",
+      );
+      expect(onJoinVoice).not.toHaveBeenCalled();
     });
   });
 });
