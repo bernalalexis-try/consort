@@ -251,10 +251,19 @@ jobs:
       # Installing git first means checkout clones instead, and `.git` is
       # there to read.
       #
+      # ca-certificates comes along because this image has no root store at
+      # all. With git present and no certificates, checkout stops using the
+      # tarball and tries a real clone, which then dies on "server certificate
+      # verification failed. CAfile: none". Installing git alone turns a silent
+      # wrong answer into a failed checkout, which is better but is not the
+      # job working.
+      #
       # ripgrep used to be installed here too. Nothing needs it now: git grep
       # searches tracked files without a pipe, which is the point.
       - name: Install git, before the checkout needs it
-        run: apt-get update && apt-get install --yes --no-install-recommends git
+        run: |
+          apt-get update
+          apt-get install --yes --no-install-recommends git ca-certificates
 
       - uses: actions/checkout@v4
 
