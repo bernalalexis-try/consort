@@ -224,7 +224,15 @@ beforeEach(() => {
 
 /** Render the pane and hand back a way to publish into it. */
 async function pane(channel: Channel = general) {
-  render(<RoomTimeline selfId="@bob:example.org" onOpenRoom={vi.fn()} channel={channel} />);
+  render(
+    <RoomTimeline
+      selfId="@bob:example.org"
+      onOpenRoom={vi.fn()}
+      infoOpen={false}
+      onToggleInfo={vi.fn()}
+      channel={channel}
+    />,
+  );
   await waitFor(() => expect(timelineOpen).toHaveBeenCalled());
 }
 
@@ -261,7 +269,15 @@ describe("RoomTimeline", () => {
   });
 
   it("closes the room when it goes", async () => {
-    const { unmount } = render(<RoomTimeline selfId="@bob:example.org" onOpenRoom={vi.fn()} channel={general} />);
+    const { unmount } = render(
+      <RoomTimeline
+        selfId="@bob:example.org"
+        onOpenRoom={vi.fn()}
+        infoOpen={false}
+        onToggleInfo={vi.fn()}
+        channel={general}
+      />,
+    );
     await waitFor(() => expect(timelineOpen).toHaveBeenCalled());
 
     unmount();
@@ -555,11 +571,27 @@ describe("RoomTimeline", () => {
   it("puts the hash on a text channel and not on a voice one", async () => {
     // The hash is the text channel's, and only the text channel's. It is how
     // every client anybody already uses says which of the two this is.
-    const { unmount } = render(<RoomTimeline selfId="@bob:example.org" onOpenRoom={vi.fn()} channel={general} />);
+    const { unmount } = render(
+      <RoomTimeline
+        selfId="@bob:example.org"
+        onOpenRoom={vi.fn()}
+        infoOpen={false}
+        onToggleInfo={vi.fn()}
+        channel={general}
+      />,
+    );
     expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("#general");
     unmount();
 
-    render(<RoomTimeline selfId="@bob:example.org" onOpenRoom={vi.fn()} channel={lounge} />);
+    render(
+      <RoomTimeline
+        selfId="@bob:example.org"
+        onOpenRoom={vi.fn()}
+        infoOpen={false}
+        onToggleInfo={vi.fn()}
+        channel={lounge}
+      />,
+    );
 
     const heading = screen.getByRole("heading", { level: 1 });
     expect(heading).toHaveTextContent("Lounge");
@@ -573,10 +605,68 @@ describe("RoomTimeline", () => {
   });
 
   it("draws no subtitle for a room with no topic", async () => {
-    const { container } = render(<RoomTimeline selfId="@bob:example.org" onOpenRoom={vi.fn()} channel={general} />);
+    const { container } = render(
+      <RoomTimeline
+        selfId="@bob:example.org"
+        onOpenRoom={vi.fn()}
+        infoOpen={false}
+        onToggleInfo={vi.fn()}
+        channel={general}
+      />,
+    );
     await waitFor(() => expect(timelineOpen).toHaveBeenCalled());
 
     expect(container.querySelector(".timeline__topic")).toBeNull();
+  });
+
+  it("opens the room's details from its name", async () => {
+    // Issue #85: the header was a line of text and pressing it did nothing.
+    const onToggleInfo = vi.fn();
+    render(
+      <RoomTimeline
+        selfId="@bob:example.org"
+        onOpenRoom={vi.fn()}
+        infoOpen={false}
+        onToggleInfo={onToggleInfo}
+        channel={general}
+      />,
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "#general" }));
+
+    expect(onToggleInfo).toHaveBeenCalled();
+  });
+
+  it("says whether the details it opens are already up", async () => {
+    // One control both ways, so it has to say which way the next press goes.
+    const { unmount } = render(
+      <RoomTimeline
+        selfId="@bob:example.org"
+        onOpenRoom={vi.fn()}
+        infoOpen={false}
+        onToggleInfo={vi.fn()}
+        channel={general}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "#general" })).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
+    unmount();
+
+    render(
+      <RoomTimeline
+        selfId="@bob:example.org"
+        onOpenRoom={vi.fn()}
+        infoOpen
+        onToggleInfo={vi.fn()}
+        channel={general}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "#general" })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
   });
 
   it("asks for the page above when the reader gets near the top", async () => {
@@ -1625,13 +1715,27 @@ describe("sending an attachment", () => {
     // picture that goes to the wrong people.
     pickAttachment.mockResolvedValue(CHOSEN);
     const { rerender } = render(
-      <RoomTimeline selfId={BOB} onOpenRoom={vi.fn()} channel={general} />,
+      <RoomTimeline
+        selfId={BOB}
+        onOpenRoom={vi.fn()}
+        infoOpen={false}
+        onToggleInfo={vi.fn()}
+        channel={general}
+      />,
     );
     await waitFor(() => expect(timelineOpen).toHaveBeenCalled());
     await userEvent.click(screen.getByRole("button", { name: "Attach a file" }));
     await screen.findByText("holiday.png");
 
-    rerender(<RoomTimeline selfId={BOB} onOpenRoom={vi.fn()} channel={lounge} />);
+    rerender(
+      <RoomTimeline
+        selfId={BOB}
+        onOpenRoom={vi.fn()}
+        infoOpen={false}
+        onToggleInfo={vi.fn()}
+        channel={lounge}
+      />,
+    );
 
     await waitFor(() =>
       expect(screen.queryByText("holiday.png")).not.toBeInTheDocument(),
@@ -1798,6 +1902,8 @@ describe("going to a message somebody linked", () => {
       <RoomTimeline
         selfId="@bob:example.org"
         onOpenRoom={vi.fn()}
+        infoOpen={false}
+        onToggleInfo={vi.fn()}
         channel={general}
         focus={focus}
       />,

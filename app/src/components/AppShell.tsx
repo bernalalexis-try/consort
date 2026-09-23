@@ -6,6 +6,7 @@ import {
   asCommandError,
   callRoomId,
   roomAt,
+  threadOpen,
   type Call,
   type CallRefused,
   type Channel,
@@ -25,6 +26,7 @@ import { RoomLinksContext, type RoomLinks } from "../lib/roomLinks";
 import { CallPanel } from "./CallPanel";
 import { CallRefusedNotice } from "./CallRefusedNotice";
 import { ChannelList } from "./ChannelList";
+import { RoomInfoPanel } from "./RoomInfoPanel";
 import { RoomTimeline } from "./RoomTimeline";
 import { SettingsModal } from "./SettingsModal";
 import { SidebarToggle } from "./SidebarToggle";
@@ -245,6 +247,17 @@ export function AppShell({
   */
   const [threadWidth, setThreadWidth] = useState(defaultThreadWidth);
   /*
+    Whether the selected room's details are on screen. Here rather than in the
+    pane, because the panel is a column beside the pane rather than something
+    in it, and because the thread panel shares that column: only the shell can
+    see both and decide which of them has it.
+
+    Not per room. Somebody who wants to know what a room is about usually wants
+    to know it about the next one too, so switching rooms redraws the panel for
+    the new one rather than shutting it.
+  */
+  const [infoOpen, setInfoOpen] = useState(false);
+  /*
     The message a link in a message asked to be shown, handed to the room that
     holds it. A fresh object per press, so following the same link twice lights
     the message up twice.
@@ -361,6 +374,22 @@ export function AppShell({
     if (showRoom === null) return;
     openRoom(showRoom.roomId);
   }, [showRoom, openRoom]);
+
+  /*
+    The right of the window holds one thing at a time, which is what every
+    client with a panel there does and what keeps the conversation readable on
+    a laptop. These are the two directions: asking for the room's details puts
+    a thread away, and `ThreadPanel` says when a thread has arrived so that
+    this can put the details away.
+  */
+  function toggleInfo() {
+    // Outside the state update rather than inside it, because an updater runs
+    // twice under `StrictMode` and this is a command to Rust.
+    if (!infoOpen) void threadOpen(null).catch(() => {});
+    setInfoOpen(!infoOpen);
+  }
+  // Stable, because the thread panel watches it in an effect.
+  const hideInfo = useCallback(() => setInfoOpen(false), []);
 
   const links = useMemo<RoomLinks>(
     () => ({
@@ -553,6 +582,8 @@ export function AppShell({
             selfId={profile.user_id}
             focus={focus}
             onOpenRoom={openRoom}
+            infoOpen={infoOpen}
+            onToggleInfo={toggleInfo}
             {...(folded ? { onUnfold: () => setFolded(false) } : {})}
           />
         )}
@@ -568,9 +599,19 @@ export function AppShell({
       <ThreadPanel
         selfId={profile.user_id}
         onOpenRoom={openRoom}
+        onOpen={hideInfo}
         width={threadWidth}
         onResize={setThreadWidth}
       />
+
+      {/*
+        Beside the room on the same terms as a thread, and never at the same
+        time as one. Drawn only with a room selected, because it is about the
+        room: the empty pane has nothing for it to describe.
+      */}
+      {infoOpen && channel !== null && (
+        <RoomInfoPanel channel={channel} onClose={hideInfo} />
+      )}
       </div>
 
       {settingsOpen && (

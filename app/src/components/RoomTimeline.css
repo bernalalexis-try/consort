@@ -31,6 +31,35 @@
 }
 
 /*
+  The name, as the thing that opens the room's details.
+
+  Styled back down to the heading it sits inside rather than up into a button:
+  a header that suddenly reads as a control is a header nobody trusts, and the
+  hover is the whole of the invitation. Inheriting the type is what keeps the
+  two identical, so the heading's size can change in one place.
+*/
+.timeline__about {
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: color var(--duration-fast) ease;
+}
+
+.timeline__about:hover {
+  color: var(--violet-hover);
+}
+
+.timeline__about:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
+}
+
+/*
   `min-width: 0`, so the ellipsis below has something to happen against.
 
   The rule under it is what makes this read as the room's header rather than

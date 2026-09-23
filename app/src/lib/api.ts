@@ -201,6 +201,15 @@ export interface Channel {
    * and for a room this account has not joined, whose state it cannot read.
    */
   topic?: string;
+  /**
+   * The address the room publishes, when it has one.
+   *
+   * Its canonical alias only, so this is the one name the room calls itself
+   * rather than every name it answers to. Absent for a room that publishes
+   * none, which is most private rooms, and absent for a room this account has
+   * not joined.
+   */
+  alias?: string;
   kind: ChannelKind;
   /** An `mxc://` URI. Pass it nowhere; call `roomAvatar(id)` for the image. */
   avatar: string | null;
@@ -1984,6 +1993,17 @@ export function timelineCopyLink(
   eventId: string,
 ): Promise<void> {
   return invoke<void>("timeline_copy_link", { roomId, eventId });
+}
+
+/**
+ * Put one room's `matrix.to` address on the clipboard.
+ *
+ * The room's own address rather than any message in it, so what comes back is
+ * the published alias where there is one and the room ID with routing servers
+ * where there is not. A command for the reason the one above is.
+ */
+export function roomCopyLink(roomId: string): Promise<void> {
+  return invoke<void>("room_copy_link", { roomId });
 }
 
 /**
