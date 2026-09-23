@@ -249,8 +249,35 @@ export function previewOf(
   message: Message,
   nameOf: (roomOrAlias: string) => string | null,
 ): string {
-  if (message.body !== "") return withAddressesNamed(message.body, nameOf);
+  /*
+    What the formatting says, when there is any, because `body` is the
+    markdown somebody typed rather than the sentence they wrote, and a quote
+    reading `**ship it**` is one nobody sent.
+
+    The body is what is left for a message whose whole content is a picture:
+    a custom emoji is an `img` with no words in it, and the shortcode in the
+    body is what a person would read out.
+  */
+  const said = wordsOf(message.html) || message.body;
+  if (said !== "") return withAddressesNamed(said, nameOf);
   return message.media?.name ?? "an attachment";
+}
+
+/**
+ * A `formatted_body` with the markup gone, or nothing.
+ *
+ * Inert, on the same terms as `FormattedBody`: the document `DOMParser`
+ * returns is never attached to the page, runs no scripts and fetches no
+ * images, and what is taken out of it here is text rather than elements. See
+ * that file for why parsing a stranger's HTML this way is the safe move
+ * rather than the dangerous one.
+ */
+function wordsOf(html: string | undefined): string {
+  if (html === undefined) return "";
+  const parsed = new DOMParser().parseFromString(html, "text/html");
+  // Collapsed, because the quote is one line and a paragraph break arrives
+  // here as a newline that would otherwise sit in the middle of it.
+  return (parsed.body.textContent ?? "").replace(/\s+/g, " ").trim();
 }
 
 /**

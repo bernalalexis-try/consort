@@ -24,8 +24,9 @@ import {
   type Participant,
   type Thread,
 } from "../lib/api";
+import { useRoomLinks } from "../lib/roomLinks";
 import { ComposerTarget } from "./ComposerTarget";
-import { MessageGroups, group } from "./MessageGroups";
+import { MessageGroups, group, previewOf } from "./MessageGroups";
 import { PersonMenu } from "./PersonMenu";
 import { AT_THE_BOTTOM, COPIED_FOR } from "./RoomTimeline";
 import "./ThreadPanel.css";
@@ -295,6 +296,22 @@ export function ThreadPanel({
     return () => window.clearTimeout(timer);
   }, [copied]);
 
+  const { nameOf } = useRoomLinks();
+  /*
+    What the panel is called: the message the whole thing hangs from, in one
+    line. "Thread" is what this used to say, which is true of every thread and
+    so tells somebody reading a long one nothing about which conversation they
+    are in. It goes back to the word when the root could not be fetched, which
+    a redaction and a missing key both look like.
+
+    Remembered rather than worked out on every render, because the panel
+    redraws on every keystroke in the box below it and this reads a message
+    that has not changed.
+  */
+  const topic = useMemo(
+    () => (thread?.root === undefined ? "Thread" : previewOf(thread.root, nameOf)),
+    [thread?.root, nameOf],
+  );
   const replies = useMemo(
     () => group(thread?.messages ?? []),
     [thread?.messages],
@@ -484,7 +501,7 @@ export function ThreadPanel({
         onKeyDown={nudge}
       />
       <div className="thread__head">
-        <h2 className="thread__name">Thread</h2>
+        <h2 className="thread__name">{topic}</h2>
         <button
           type="button"
           className="thread__close"
