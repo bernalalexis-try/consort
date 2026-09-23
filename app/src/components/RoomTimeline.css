@@ -380,6 +380,26 @@
   pointer-events: auto;
 }
 
+/*
+  Held open while the question about deleting is up.
+
+  Focus is inside it, so `:focus-within` above already covers the ordinary
+  case. This covers the one it does not: a click on the panel's own words
+  rather than its buttons takes the focus out, and without this the question
+  and the row it hangs from would fade out from under the hand that is
+  answering it.
+*/
+.timeline__actions[data-asking="true"] {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* Something for the question to hang from, as the picker's control has. */
+.timeline__remove {
+  position: relative;
+  display: flex;
+}
+
 .timeline__action {
   display: grid;
   place-items: center;
@@ -1044,6 +1064,28 @@
 */
 .timeline__body[data-kind="notice"] {
   color: var(--text-muted);
+}
+
+/*
+  The mark where a message was.
+
+  Quieter than the two below it, which are waits: an undecryptable message may
+  still arrive and an unsupported one is a limit of this build, so both are
+  drawn as something being missed. This one is finished, and a mark that shouts
+  would make every deleted line in a room louder than the conversation around
+  it.
+
+  Italic rather than boxed for the same reason. The box those two carry says
+  "something belongs here"; nothing belongs here any more.
+*/
+.timeline__deleted {
+  display: flex;
+  gap: var(--space-1);
+  align-items: center;
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  font-style: italic;
 }
 
 /*

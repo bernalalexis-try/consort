@@ -481,6 +481,27 @@ pub async fn timeline_edit_for(
     Ok(())
 }
 
+/// Delete a message this account sent.
+///
+/// The event ID alone, on the same terms as an edit and for the same reason:
+/// who may remove what is the homeserver's to decide, and taking the webview's
+/// word for it would be taking it for who is allowed to delete whom. The
+/// control is only drawn on this account's own messages, which keeps somebody
+/// from pressing something that cannot work rather than being what enforces it.
+///
+/// A redaction, which is not an erasure. The homeserver empties the event and
+/// serves the emptied version from then on, and what federation has already
+/// handed to other servers is not recalled.
+pub async fn timeline_delete_for(
+    state: &AppState,
+    room_id: String,
+    event_id: String,
+) -> Result<(), CommandError> {
+    let client = signed_in_client(state).await?;
+    timeline::delete(&client, &room_id, &event_id).await?;
+    Ok(())
+}
+
 /// Say something in a thread.
 ///
 /// The same as saying something in the room, with the relation that puts it in
@@ -1500,6 +1521,16 @@ pub async fn timeline_edit(
     body: String,
 ) -> Result<(), CommandError> {
     timeline_edit_for(&state, room_id, event_id, body).await
+}
+
+/// See `timeline_delete_for`.
+#[tauri::command]
+pub async fn timeline_delete(
+    state: State<'_, AppState>,
+    room_id: String,
+    event_id: String,
+) -> Result<(), CommandError> {
+    timeline_delete_for(&state, room_id, event_id).await
 }
 
 /// See `timeline_react_for`.
@@ -4258,6 +4289,23 @@ mod against_a_mock_homeserver {
             )
             .await
             .unwrap_err();
+
+            assert_eq!(
+                refused.message,
+                consort_matrix::Error::NotLoggedIn.user_message()
+            );
+        }
+
+        #[tokio::test]
+        async fn deleting_a_message_while_signed_out_is_refused_first() {
+            // Before the room and before the event ID, so that a session that
+            // has gone says so rather than answering about the message.
+            let (_dir, state, _sink) = state();
+
+            let refused =
+                timeline_delete_for(&state, GENERAL.to_owned(), "$said:example.org".to_owned())
+                    .await
+                    .unwrap_err();
 
             assert_eq!(
                 refused.message,

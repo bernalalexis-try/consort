@@ -32,6 +32,7 @@ import {
   timelineReact,
   timelineReply,
   timelineEdit,
+  timelineDelete,
   timelineSend,
   timelineTyping,
   timelineUnreact,
@@ -914,6 +915,31 @@ export function RoomTimeline({
   }
 
   /**
+   * Delete a message this account sent.
+   *
+   * Reached once the question hanging off the control has been answered, so
+   * this sends the redaction rather than asking again.
+   *
+   * The composer is put back first when it was pointed at this message.
+   * Pressing Edit and then Delete is two presses apart, and what it would
+   * otherwise leave behind is a correction addressed to an event with nothing
+   * left to correct.
+   *
+   * Nothing is echoed, on the same terms as every other send: the words stay
+   * on screen until the sync brings the redaction back.
+   */
+  function remove(message: Message) {
+    if (editingNow.current?.id === message.id) stopEditing();
+    // The box is left alone here, unlike the line above. What is in it while
+    // answering is something somebody typed rather than a copy of the old
+    // message, and it is still worth sending somewhere else.
+    if (answering?.id === message.id) setAnswering(null);
+    void timelineDelete(channel.id, message.id).catch((raw: unknown) => {
+      setProblem(asCommandError(raw).message);
+    });
+  }
+
+  /**
    * Correct the last thing this account said in what is loaded.
    *
    * What the up arrow does in an empty box. Newest first, and past anything an
@@ -1178,6 +1204,7 @@ export function RoomTimeline({
           copiedId={copied}
           onReply={reply}
           onEdit={edit}
+          onDelete={remove}
           onCopyLink={copyLink}
           newFrom={newFrom}
           newDay={newDay}

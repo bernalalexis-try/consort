@@ -28,6 +28,7 @@ const timelineTyping = vi.hoisted(() => vi.fn());
 const timelineSend = vi.hoisted(() => vi.fn());
 const timelineReply = vi.hoisted(() => vi.fn());
 const timelineEdit = vi.hoisted(() => vi.fn());
+const timelineDelete = vi.hoisted(() => vi.fn());
 const timelineCopyLink = vi.hoisted(() => vi.fn());
 const timelineMarkRead = vi.hoisted(() => vi.fn());
 const memberNames = vi.hoisted(() => vi.fn());
@@ -64,6 +65,7 @@ vi.mock("../lib/api", async (importOriginal) => ({
   timelineSend,
   timelineReply,
   timelineEdit,
+  timelineDelete,
   timelineCopyLink,
   timelineMarkRead,
   memberNames,
@@ -202,6 +204,7 @@ beforeEach(() => {
   timelineSend.mockReset().mockResolvedValue(undefined);
   timelineReply.mockReset().mockResolvedValue(undefined);
   timelineEdit.mockReset().mockResolvedValue(undefined);
+  timelineDelete.mockReset().mockResolvedValue(undefined);
   timelineCopyLink.mockReset().mockResolvedValue(undefined);
   timelineMarkRead.mockReset().mockResolvedValue(undefined);
   memberNames.mockReset().mockResolvedValue({ [ADA]: "Ada", [BOB]: "Bob" });
@@ -1381,6 +1384,116 @@ describe("correcting a message", () => {
     expect(
       screen.queryByRole("button", { name: "Stop editing" }),
     ).not.toBeInTheDocument();
+  });
+});
+
+describe("deleting a message", () => {
+  /** Press Delete on this account's own message and answer the question yes. */
+  async function deleting() {
+    await pane();
+    await arrive(timeline([said("$1", BOB, "wrong number")]));
+    await userEvent.click(screen.getByRole("button", { name: "Delete" }));
+    await userEvent.click(
+      within(screen.getByRole("dialog")).getByRole("button", { name: "Delete" }),
+    );
+  }
+
+  it("offers the control on this account's own message and not on another's", async () => {
+    await pane();
+    await arrive(
+      timeline([
+        said("$1", BOB, "wrong number"),
+        said("$2", ADA, "what they said"),
+      ]),
+    );
+
+    expect(screen.getAllByRole("button", { name: "Delete" })).toHaveLength(1);
+  });
+
+  it("sends nothing until the question has been answered", async () => {
+    await pane();
+    await arrive(timeline([said("$1", BOB, "wrong number")]));
+
+    await userEvent.click(screen.getByRole("button", { name: "Delete" }));
+
+    expect(timelineDelete).not.toHaveBeenCalled();
+  });
+
+  it("redacts the message once the question is answered", async () => {
+    await deleting();
+
+    expect(timelineDelete).toHaveBeenCalledWith(GENERAL, "$1");
+  });
+
+  it("says so when the homeserver refuses", async () => {
+    // A moderated room can refuse a redaction, and the SDK's HTTP error is
+    // not a sentence to put on a screen.
+    timelineDelete.mockRejectedValue({
+      message: "That did not work.",
+      detail: "no",
+    });
+
+    await deleting();
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "That did not work.",
+    );
+  });
+
+  it("puts the composer back when the message being edited is deleted", async () => {
+    // Two presses apart, and what it would otherwise leave behind is a
+    // correction addressed to an event with nothing left to correct.
+    await pane();
+    await arrive(timeline([said("$1", BOB, "wrong number")]));
+    await userEvent.click(screen.getByRole("button", { name: "Edit" }));
+
+    await userEvent.click(screen.getByRole("button", { name: "Delete" }));
+    await userEvent.click(
+      within(screen.getByRole("dialog")).getByRole("button", { name: "Delete" }),
+    );
+
+    expect(
+      screen.queryByRole("button", { name: "Stop editing" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("textbox")).toHaveValue("");
+  });
+
+  it("keeps a half-written reply when the message being answered is deleted", async () => {
+    // The other way round from an edit. What is in the box is something
+    // somebody typed, and it is still worth sending somewhere else.
+    await pane();
+    await arrive(
+      timeline([
+        said("$1", ADA, "the one being answered"),
+        said("$2", BOB, "wrong number"),
+      ]),
+    );
+    const [theirs] = screen.getAllByRole("button", { name: "Reply" });
+    await userEvent.click(theirs as HTMLElement);
+    await userEvent.type(screen.getByRole("textbox"), "half a sentence");
+
+    await userEvent.click(screen.getByRole("button", { name: "Delete" }));
+    await userEvent.click(
+      within(screen.getByRole("dialog")).getByRole("button", { name: "Delete" }),
+    );
+
+    expect(screen.getByRole("textbox")).toHaveValue("half a sentence");
+  });
+
+  it("draws the mark when the redaction comes back", async () => {
+    // There is no local echo, so the message stays on screen until the sync
+    // brings the redaction round, which is when this arrives.
+    await deleting();
+    expect(screen.getByText("wrong number")).toBeInTheDocument();
+
+    await arrive(
+      timeline([
+        { ...said("$1", BOB, ""), kind: "deleted" as const, deletedBy: BOB },
+      ]),
+    );
+
+    expect(await screen.findByText("Message deleted")).toBeInTheDocument();
+    expect(screen.queryByText("wrong number")).not.toBeInTheDocument();
   });
 });
 
