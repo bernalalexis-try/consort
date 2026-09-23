@@ -267,6 +267,18 @@ jobs:
 
       - uses: actions/checkout@v4
 
+      # The workspace belongs to the runner's own uid on the host and these
+      # steps are root inside the container. git calls that dubious ownership
+      # and refuses to read the repository at all. actions/checkout grants
+      # itself the same exception, but it does so under a temporary HOME that
+      # it puts back when it finishes, so nothing below inherits it.
+      #
+      # Worth knowing that the gates caught this themselves: the em dash step
+      # reported "git grep could not read the tree (status 128)" and failed,
+      # where the old pipeline would have printed "None found." and passed.
+      - name: Trust the checked-out workspace
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
       - name: No em dashes or en dashes
         # House style. They are banned in source, comments, commit messages and
         # docs; a plain hyphen is fine.
